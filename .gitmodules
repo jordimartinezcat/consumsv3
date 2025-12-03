@@ -1,0 +1,3 @@
+[submodule "CAT_Conexions"]
+	path = CAT_Conexions
+	url = https://github.com/jordimartinezcat/CAT_Conexions.git
