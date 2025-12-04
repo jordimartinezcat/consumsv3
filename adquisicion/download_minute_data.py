@@ -40,16 +40,32 @@ resolution = "RES_1_MIN"
 
 # Leer señales preparadas
 signals_file = os.path.join(os.path.dirname(__file__), "senales_para_descarga.txt")
-if not os.path.exists(signals_file):
-    logging.error("No existe el fichero de señales: %s", signals_file)
-    raise SystemExit(1)
 
-with open(signals_file, "r", encoding="utf-8") as f:
-    tags = [line.strip() for line in f.readlines() if line.strip()]
+# Determinar comportamiento según filtro en la config: si el filter está vacío,
+# descargamos todos los tags de la vista; si no, usamos la lista de señales.
+filter_prefix = None
+for task in cfg.get('tasks', []):
+    if task.get('name') == 'fetch_api_data':
+        filter_prefix = task.get('filter')
+        break
 
-if not tags:
-    logging.info("No hay tags en %s", signals_file)
-    raise SystemExit(0)
+use_all = False
+if filter_prefix is None or str(filter_prefix).strip() == "":
+    use_all = True
+
+if not use_all:
+    if not os.path.exists(signals_file):
+        logging.error("No existe el fichero de señales: %s", signals_file)
+        raise SystemExit(1)
+
+    with open(signals_file, "r", encoding="utf-8") as f:
+        tags = [line.strip() for line in f.readlines() if line.strip()]
+
+    if not tags:
+        logging.info("No hay tags en %s", signals_file)
+        raise SystemExit(0)
+else:
+    tags = None
 
 # Obtener tags disponibles en la vista
 logging.info("Solicitando listado de tags desde la vista %s", vista)
@@ -74,6 +90,10 @@ os.makedirs(out_dir, exist_ok=True)
 
 combined = []
 missing = []
+
+if use_all:
+    logging.info("Filter vacío en config: se descargarán todos los tags de la vista")
+    tags = sorted(tag_uid_map.keys())
 
 for tag in tags:
     uid = tag_uid_map.get(tag)
