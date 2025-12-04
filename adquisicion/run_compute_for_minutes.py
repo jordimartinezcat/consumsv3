@@ -14,6 +14,7 @@ if ROOT not in sys.path:
 # Importar la API del submódulo
 from CAT_Conexions.src.conexions import apiSagedCAT
 from download_minute_data import download_minute_data
+from procesado.compute_consumption import append_minute_consumption, distribute_negative_compensations
 
 # Configuración de logging
 logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")
@@ -129,6 +130,79 @@ def apply_rect_0(df):
 
 
 df = apply_rect_0(df)
+
+# Calculate minute consumptions and append them
+try:
+    df = append_minute_consumption(df)
+    logging.info('Appended per-minute consumption columns')
+except Exception as e:
+    logging.warning('Could not compute/append consumption columns: %s', e)
+
+# Apply anomaly distribution rule and attach anomaly columns
+try:
+    # compute anomalies per total column explicitly here to ensure values are filled
+    tot_candidates = [c for c in df.columns if c.endswith('_rect_0')]
+    if not tot_candidates:
+        tot_candidates = [c for c in df.columns if c.endswith('_TOT')]
+
+    import numpy as _np
+    for total_col in tot_candidates:
+        cons_col = f"{total_col}_cons"
+        anom_col = f"{total_col}_anom"
+        if cons_col not in df.columns:
+            df[anom_col] = _np.nan
+            continue
+
+        # prefer raw TOT to detect zero runs
+        raw_col = total_col.replace('_rect_0', '_TOT') if total_col.endswith('_rect_0') else total_col
+        if raw_col in df.columns:
+            totals_raw = pd.to_numeric(df[raw_col], errors='coerce').fillna(_np.nan).to_numpy()
+        else:
+            totals_raw = pd.to_numeric(df[total_col], errors='coerce').fillna(_np.nan).to_numpy()
+
+        cons = pd.to_numeric(df[cons_col], errors='coerce').fillna(0).to_numpy()
+        n = len(df)
+        anom = _np.zeros(n, dtype=float)
+        i = 0
+        matches = 0
+        applied = 0
+        while i < n - 1:
+            cur = cons[i]
+            nxt = cons[i + 1]
+            if cur < 0 and nxt > 0:
+                matches += 1
+                net = cur + nxt
+                if net > 0:
+                    j = i
+                    while j >= 0 and (totals_raw[j] == 0 or _np.isnan(totals_raw[j])):
+                        j -= 1
+                    start = j + 1
+                    end = i
+                    count = end - start + 1
+                    logging.info('  i=%d cur=%s nxt=%s net=%s j=%d start=%d end=%d count=%d', i, cur, nxt, net, j, start, end, count)
+                    if count > 0:
+                        per = net / count
+                        anom[start:end + 1] += per
+                        applied += 1
+                i += 2
+            else:
+                i += 1
+        logging.info('%s: found %d neg+pos patterns, applied %d distributions', total_col, matches, applied)
+
+        # replace zeros with NaN
+        anom_series = pd.Series(anom, index=df.index, dtype='float64').replace(0.0, _np.nan)
+        df[anom_col] = anom_series
+    logging.info('Applied anomaly distribution to totalized columns (inline)')
+except Exception as e:
+    logging.warning('Could not apply anomaly distribution: %s', e)
+else:
+    # log counts of anomaly values for debugging
+    try:
+        for c in anom_df.columns:
+            cnt = df[c].notna().sum()
+            logging.info('Anomaly column %s non-null count: %d', c, cnt)
+    except Exception:
+        pass
 
 # Guardar CSV con separador ';' y decimales ',' si está habilitado en config
 save_task = next((t for t in cfg.get('tasks', []) if t.get('name') == 'save_to_csv'), None)
