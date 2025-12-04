@@ -71,6 +71,15 @@ def download_minute_data(cfg=None):
         if not tags:
             logging.info("No hay tags en %s", signals_file)
             return None, []
+
+        # Aplicar filtro de configuración sobre la lista de señales (subcadena)
+        if filter_prefix:
+            orig_count = len(tags)
+            tags = [t for t in tags if filter_prefix in t]
+            logging.info("Filtro '%s' aplicado a señales: %d -> %d", filter_prefix, orig_count, len(tags))
+            if not tags:
+                logging.warning("No hay señales que contengan '%s' en %s", filter_prefix, signals_file)
+                return None, []
     else:
         tags = None
 
@@ -103,13 +112,28 @@ def download_minute_data(cfg=None):
         tags = sorted(tag_uid_map.keys())
 
     for tag in tags:
-        uid = tag_uid_map.get(tag)
+        # The API stores tag names with prefix 'CL_CAT_'. Try direct match first,
+        # then try with the prefix. Keep the original `tag` as label/filename.
+        request_name = tag
+        uid = tag_uid_map.get(request_name)
+        if not uid:
+            prefixed = f"CL_CAT_{tag}"
+            uid = tag_uid_map.get(prefixed)
+            if uid:
+                request_name = prefixed
+
+        if not uid:
+            # Also handle case where tags file already contains prefixed names
+            if tag.startswith("CL_CAT_") and tag in tag_uid_map:
+                uid = tag_uid_map.get(tag)
+                request_name = tag
+
         if not uid:
             logging.warning("Tag no encontrado en vista: %s", tag)
             missing.append(tag)
             continue
 
-        logging.info("Descargando datos minutales para %s (uid=%s)", tag, uid)
+        logging.info("Descargando datos minutales para %s (request_name=%s uid=%s)", tag, request_name, uid)
 
         params = {
             "dataSource": "RAW",
