@@ -1,0 +1,56 @@
+{
+    "description": "Ejemplo de configuración para Consums",
+    "db": {
+        "host": "localhost",
+        "port": 5432,
+        "database": "goaigua_data",
+        "user": "postgres",
+        "password": "Consorci2025"
+    },
+    "api": {
+        "base_url": "https://sagedcat-nex0-vm.xylemvue.goaigua.com:56443/api",
+        "nexustoken": "0333adb8-07fa-40d6-8f10-f5e66b6163a9",
+        "vista": "560597aa-89e3-43df-9273-7875595319b8"
+    },
+    "postprocess": {
+           "combine_totals": true,
+           "compute": {
+               "force_minute_requery_hours": [
+                   "2025-06-02 11:00:00"
+               ],
+               "manual_overrides": {
+                   "2025-06-02 11:00:00": {
+                       "force_minute_sum": 0,
+                       "tag": "SPIKE",
+                       "force_replace": true
+                   }
+               }
+           }
+    },
+    "period": {
+        "start": "2025-01-01 00:00:00",
+        "end": "2025-09-30 23:59:59"
+    },
+    "tasks": [
+        {
+            "name": "fetch_api_data",
+            "enabled": true,
+            "filter":"PBD07"
+        },
+        {
+            "name": "push_to_pg_datalake",
+            "enabled": false
+        },
+        {
+            "name": "save_to_csv",
+            "enabled": true,
+            "output_dir":"",
+            "filename":""
+        }
+        ,
+        {
+            "name": "compute_consumption",
+            "enabled": true
+        }
+    ]
+}

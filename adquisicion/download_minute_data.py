@@ -143,7 +143,8 @@ def download_minute_data(cfg=None):
             "endTs": datetime.timestamp(datetime.strptime(end, '%Y-%m-%d %H:%M:%S')),
         }
 
-        url = f"{base_url}/Documents/{vista}/historic"
+        # Use the 'tagviews' historic endpoint: the path expects the view UID
+        url = f"{base_url}/Documents/tagviews/{vista}/historic"
         try:
             resp = api.HEADERS and api.HEADERS or headers
             import requests
