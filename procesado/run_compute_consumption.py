@@ -65,7 +65,7 @@ def main():
         print('No anomaly columns found, generating them...')
         result = attach_anomalies_to_df(result)
 
-    out_dir = os.path.join(root, 'procesado')
+    out_dir = os.path.join(root, 'procesado', 'Data')
     os.makedirs(out_dir, exist_ok=True)
     from datetime import datetime
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')

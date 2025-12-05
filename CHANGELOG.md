@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.1] - 2025-12-05
+### Changed
+- Code cleanup and organization:
+  - Removed all unused debug and verification scripts from `procesado/` directory
+  - Removed temporary debug scripts from project root
+  - Updated `run_compute_consumption.py` to save output files in `procesado/Data/` subdirectory
+  - Updated documentation to reflect new organized file structure
+  - Project now has clean, maintainable structure with only essential files
+
 ## [0.1.0] - 2025-12-04
 ### Added
 - Updated signal extraction logic in `adquisicion/extraer_senales_ftr.py`:

@@ -60,10 +60,10 @@ python .\adquisicion\download_minute_data.py
 python .\procesado\run_compute_consumption.py
 ```
 
-### Debugging Scripts
-Use scripts in v2 for pattern reference:
-- `scripts/inspect_minutes_detailed.py`: Minute-level consumption analysis
-- `scripts/diag_minute_windows.py`: Reset detection diagnostics
+### Core Processing Scripts
+- `procesado/compute_consumption.py`: Core anomaly detection and consumption calculation module
+- `procesado/run_compute_consumption.py`: Main execution script, outputs to `procesado/Data/`
+- Reference v2 `scripts/` for debugging patterns if needed
 
 ## Integration Points
 
@@ -73,7 +73,7 @@ Use scripts in v2 for pattern reference:
 
 ### File I/O Patterns
 - **Input**: `senales_para_descarga.txt` (one signal per line)
-- **Output**: Timestamped CSVs in `adquisicion/minute_data/` and `outputs/`
+- **Output**: Raw data in `adquisicion/minute_data/`, processed results in `procesado/Data/`
 - **Config**: JSON-driven with manual overrides for specific timestamps
 
 ## Anti-Patterns to Avoid
