@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2025-12-05
+### Added
+- Hourly aggregation system for consumption data:
+  - `compute_hourly_consumption.py`: Module for aggregating minute-level data to hourly resolution
+  - `run_hourly_aggregation.py`: Script to generate hourly consumption summaries
+  - Three output columns per tag: direct sum, corrected consumption, and correction indicator
+  - Proper handling of anomaly redistributions in hourly totals
+  - European CSV format support with automatic format detection
+  - Comprehensive documentation and validation of hourly processing workflow
+
 ## [0.2.1] - 2025-12-05
 ### Changed
 - Code cleanup and organization:

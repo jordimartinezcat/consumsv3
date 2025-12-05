@@ -58,11 +58,16 @@ python .\adquisicion\download_minute_data.py
 
 # Compute consumption with anomaly detection
 python .\procesado\run_compute_consumption.py
+
+# Generate hourly aggregation with anomaly corrections
+python .\procesado\run_hourly_aggregation.py
 ```
 
 ### Core Processing Scripts
 - `procesado/compute_consumption.py`: Core anomaly detection and consumption calculation module
 - `procesado/run_compute_consumption.py`: Main execution script, outputs to `procesado/Data/`
+- `procesado/compute_hourly_consumption.py`: Hourly aggregation module for minute-level consumption data
+- `procesado/run_hourly_aggregation.py`: Script to generate hourly consumption summaries with anomaly corrections
 - Reference v2 `scripts/` for debugging patterns if needed
 
 ## Integration Points
