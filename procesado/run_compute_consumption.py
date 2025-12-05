@@ -9,7 +9,7 @@ parent_dir = os.path.dirname(current_dir)
 sys.path.insert(0, current_dir)
 sys.path.insert(0, parent_dir)
 
-from compute_consumption import append_minute_consumption, attach_anomalies_to_df
+from compute_consumption import append_minute_consumption, attach_anomalies_to_df, detect_counter_resets
 
 
 def find_latest_all_minutes(path_root: str):
@@ -49,28 +49,35 @@ def main():
     
     print(f'Loaded DataFrame with columns: {list(df.columns)}')
 
+    # Step 1: Calculate consumption
     result = append_minute_consumption(df)
     
-    # Check if anomaly columns already exist
+    # Step 2: Detect regular anomalies (negative compensations)
     anom_cols = [c for c in result.columns if c.endswith('_anom')]
     if anom_cols:
-        # Check if they have any non-null values
         has_values = any(result[col].notna().sum() > 0 for col in anom_cols)
         if has_values:
             print(f'Found existing anomaly columns with data: {anom_cols}')
         else:
-            print(f'Found empty anomaly columns, regenerating: {anom_cols}')
+            print(f'Generating regular anomalies: {anom_cols}')
             result = attach_anomalies_to_df(result)
     else:
-        print('No anomaly columns found, generating them...')
+        print('Generating anomaly columns...')
         result = attach_anomalies_to_df(result)
+    
+    # Step 3: Detect and mark counter resets (this happens AFTER regular anomalies)
+    result = detect_counter_resets(result)
+    
+    # Count final anomalies
+    total_anomalies = sum(result[col].notna().sum() for col in anom_cols)
+    print(f'Total anomalies after reset detection: {total_anomalies}')
 
     out_dir = os.path.join(root, 'procesado', 'Data')
     os.makedirs(out_dir, exist_ok=True)
     from datetime import datetime
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     out_path = os.path.join(out_dir, f'consumption_minutes_with_anom_{timestamp}.csv')
-    result.to_csv(out_path, index=True)
+    result.to_csv(out_path, index=True, sep=';', decimal=',')
     print(f'Saved minute consumption to: {out_path}')
     print(f'Final DataFrame columns: {list(result.columns)}')
     return 0

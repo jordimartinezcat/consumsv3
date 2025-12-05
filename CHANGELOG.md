@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2025-12-05
+### Added
+- Counter reset detection and correction system for industrial IoT totalizers:
+  - `detect_counter_resets()` function in `compute_consumption.py` detects resets at power-of-10 thresholds
+  - `determine_counter_max()` helper estimates counter maximum using log10 calculation
+  - Automatic detection of resets when consumption drops below -1,000,000
+  - Reset corrections marked in anomaly column while preserving original consumption values
+  - Three-phase sequential processing: consumption calculation → regular anomalies → reset detection
+  - European CSV format (sep=';', decimal=',') for all minute-level outputs
+  - Hourly aggregation correctly identifies periods with resets via has_corrections indicator
+
+### Changed
+- Modified `append_minute_consumption()` to focus only on consumption calculation (simplified)
+- Updated `run_compute_consumption.py` to execute three-phase processing sequence
+- Changed CSV output format to European standard (semicolon separator, comma decimal)
+
 ## [0.3.0] - 2025-12-05
 ### Added
 - Hourly aggregation system for consumption data:
