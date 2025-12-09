@@ -1,6 +1,7 @@
+import glob
 import os
 import sys
-import glob
+
 import pandas as pd
 
 # Add current directory and parent to Python path
@@ -9,15 +10,21 @@ parent_dir = os.path.dirname(current_dir)
 sys.path.insert(0, current_dir)
 sys.path.insert(0, parent_dir)
 
-from compute_consumption import append_minute_consumption, attach_anomalies_to_df, detect_counter_resets
+from compute_consumption import (
+    append_minute_consumption,
+    attach_anomalies_to_df,
+    detect_counter_resets,
+)
 
 
 def find_latest_all_minutes(path_root: str):
-    pattern = os.path.join(path_root, 'adquisicion', 'minute_data', 'all_minutes*.csv')
+    pattern = os.path.join(path_root, "adquisicion", "minute_data", "all_minutes*.csv")
     files = glob.glob(pattern)
     if not files:
         # fallback to plain all_minutes.csv
-        fallback = os.path.join(path_root, 'adquisicion', 'minute_data', 'all_minutes.csv')
+        fallback = os.path.join(
+            path_root, "adquisicion", "minute_data", "all_minutes.csv"
+        )
         return fallback if os.path.exists(fallback) else None
     # return latest by modification time
     return max(files, key=os.path.getmtime)
@@ -27,61 +34,62 @@ def main():
     root = os.path.dirname(os.path.dirname(__file__))
     src = find_latest_all_minutes(root)
     if src is None:
-        print('No combined all_minutes CSV found in adquisicion/minute_data')
+        print("No combined all_minutes CSV found in adquisicion/minute_data")
         return 2
 
-    print(f'Loading combined CSV: {src}')
+    print(f"Loading combined CSV: {src}")
     # Try to detect CSV format first
     try:
-        df = pd.read_csv(src, sep=';', decimal=',')
+        df = pd.read_csv(src, sep=";", decimal=",")
         print('Loaded CSV with European format (sep=";", decimal=",")')
     except Exception as e:
-        print(f'European format failed: {e}, trying auto-detection...')
-        df = pd.read_csv(src, sep=None, engine='python')
-        print('Loaded CSV with auto-detected format')
-    
+        print(f"European format failed: {e}, trying auto-detection...")
+        df = pd.read_csv(src, sep=None, engine="python")
+        print("Loaded CSV with auto-detected format")
+
     # try to parse index if there is a timestamp column
-    if 'timestamp' in df.columns:
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
-        df = df.set_index('timestamp')
-    elif df.index.name in ('timestamp', 'timeStamp'):
+    if "timestamp" in df.columns:
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df = df.set_index("timestamp")
+    elif df.index.name in ("timestamp", "timeStamp"):
         df.index = pd.to_datetime(df.index)
-    
-    print(f'Loaded DataFrame with columns: {list(df.columns)}')
+
+    print(f"Loaded DataFrame with columns: {list(df.columns)}")
 
     # Step 1: Calculate consumption
     result = append_minute_consumption(df)
-    
+
     # Step 2: Detect regular anomalies (negative compensations)
-    anom_cols = [c for c in result.columns if c.endswith('_anom')]
+    anom_cols = [c for c in result.columns if c.endswith("_anom")]
     if anom_cols:
         has_values = any(result[col].notna().sum() > 0 for col in anom_cols)
         if has_values:
-            print(f'Found existing anomaly columns with data: {anom_cols}')
+            print(f"Found existing anomaly columns with data: {anom_cols}")
         else:
-            print(f'Generating regular anomalies: {anom_cols}')
+            print(f"Generating regular anomalies: {anom_cols}")
             result = attach_anomalies_to_df(result)
     else:
-        print('Generating anomaly columns...')
+        print("Generating anomaly columns...")
         result = attach_anomalies_to_df(result)
-    
+
     # Step 3: Detect and mark counter resets (this happens AFTER regular anomalies)
     result = detect_counter_resets(result)
-    
+
     # Count final anomalies
     total_anomalies = sum(result[col].notna().sum() for col in anom_cols)
-    print(f'Total anomalies after reset detection: {total_anomalies}')
+    print(f"Total anomalies after reset detection: {total_anomalies}")
 
-    out_dir = os.path.join(root, 'procesado', 'Data')
+    out_dir = os.path.join(root, "procesado", "Data")
     os.makedirs(out_dir, exist_ok=True)
     from datetime import datetime
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    out_path = os.path.join(out_dir, f'consumption_minutes_with_anom_{timestamp}.csv')
-    result.to_csv(out_path, index=True, sep=';', decimal=',')
-    print(f'Saved minute consumption to: {out_path}')
-    print(f'Final DataFrame columns: {list(result.columns)}')
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_path = os.path.join(out_dir, f"consumption_minutes_with_anom_{timestamp}.csv")
+    result.to_csv(out_path, index=True, sep=";", decimal=",")
+    print(f"Saved minute consumption to: {out_path}")
+    print(f"Final DataFrame columns: {list(result.columns)}")
     return 0
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     raise SystemExit(main())

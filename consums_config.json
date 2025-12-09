@@ -5,7 +5,7 @@
         "port": 5432,
         "database": "goaigua_data",
         "user": "postgres",
-        "password": "Consorci2025"
+        "password": "P7alxpit"
     },
     "api": {
         "base_url": "https://sagedcat-nex0-vm.xylemvue.goaigua.com:56443/api",

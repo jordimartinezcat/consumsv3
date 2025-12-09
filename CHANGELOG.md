@@ -3,7 +3,9 @@
 All notable changes to this project will be documented in this file.
 
 ## [0.4.0] - 2025-12-05
+
 ### Added
+
 - Counter reset detection and correction system for industrial IoT totalizers:
   - `detect_counter_resets()` function in `compute_consumption.py` detects resets at power-of-10 thresholds
   - `determine_counter_max()` helper estimates counter maximum using log10 calculation
@@ -14,12 +16,15 @@ All notable changes to this project will be documented in this file.
   - Hourly aggregation correctly identifies periods with resets via has_corrections indicator
 
 ### Changed
+
 - Modified `append_minute_consumption()` to focus only on consumption calculation (simplified)
 - Updated `run_compute_consumption.py` to execute three-phase processing sequence
 - Changed CSV output format to European standard (semicolon separator, comma decimal)
 
 ## [0.3.0] - 2025-12-05
+
 ### Added
+
 - Hourly aggregation system for consumption data:
   - `compute_hourly_consumption.py`: Module for aggregating minute-level data to hourly resolution
   - `run_hourly_aggregation.py`: Script to generate hourly consumption summaries
@@ -29,7 +34,9 @@ All notable changes to this project will be documented in this file.
   - Comprehensive documentation and validation of hourly processing workflow
 
 ## [0.2.1] - 2025-12-05
+
 ### Changed
+
 - Code cleanup and organization:
   - Removed all unused debug and verification scripts from `procesado/` directory
   - Removed temporary debug scripts from project root
@@ -38,7 +45,9 @@ All notable changes to this project will be documented in this file.
   - Project now has clean, maintainable structure with only essential files
 
 ## [0.1.0] - 2025-12-04
+
 ### Added
+
 - Updated signal extraction logic in `adquisicion/extraer_senales_ftr.py`:
   - Queries now search directly for `TOT_L` and `TOT_H` signals.
   - Exclude signals starting with `ET` and any tags containing `_LS_` or `_P_`.
@@ -47,27 +56,32 @@ All notable changes to this project will be documented in this file.
   - Output final list to `adquisicion/senales_para_descarga.txt`.
 
 ## [0.2.0] - 2025-12-04
+
 ### Added
+
 - Anomaly detection and distribution system for consumption data:
   - `attach_anomalies_to_df()` function in `procesado/compute_consumption.py` detects negative+positive consumption patterns
   - Distributes excess consumption between consecutive minutes with totalizador=0 when available
   - Falls back to distributing between the two problematic consumption minutes when no zero-totalizador minutes exist
   - Preserves original negative consumption values in `_cons` columns while adding corrections in `_anom` columns
 - Enhanced CSV processing in `run_compute_consumption.py`:
-  - Auto-detection of European CSV format (sep=';', decimal=',')  
+  - Auto-detection of European CSV format (sep=';', decimal=',')
   - Improved anomaly column detection and regeneration logic
   - Better error handling for path resolution and module imports
 
 ### Fixed
+
 - Anomaly columns (`*_anom`) now correctly saved in final CSV output
 - Corrected raw totalizador column name resolution for anomaly detection algorithm
 - Fixed distribution range to include both negative and positive consumption minutes
 
   ## [0.1.1] - 2025-12-04
+
   ### Added
+
   - Download minute-resolution data for selected tags using `adquisicion/download_minute_data.py`.
   - Combine `TOT_H`/`TOT_L` into 32-bit `*_TOT` values and save per-tag and combined CSVs.
+
   ### Changed
+
   - Implemented first quality rule (`rect_0`) that creates `<tag>_TOT_rect_0` columns where invalid readings (0 or transient drops per rule) are replaced with the last valid value.
-
-

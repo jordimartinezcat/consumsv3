@@ -5,6 +5,7 @@ Procesa los datos minutales más recientes y genera un archivo CSV con:
 - Suma horaria directa de consumos
 - Suma horaria aplicando correcciones de anomalías
 """
+
 import os
 import sys
 
@@ -21,15 +22,15 @@ def main():
     """Función principal para ejecutar la agregación horaria."""
     try:
         print("=== Iniciando Agregación Horaria de Consumos ===")
-        
+
         # Procesar datos y generar archivo horario
         output_file = process_latest_minute_data()
-        
+
         print("=== Procesamiento Completado Exitosamente ===")
         print(f"Archivo generado: {output_file}")
-        
+
         return 0
-        
+
     except FileNotFoundError as e:
         print(f"Error: Archivo no encontrado - {e}")
         return 1
@@ -38,5 +39,5 @@ def main():
         return 2
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     raise SystemExit(main())
