@@ -201,6 +201,101 @@ def distribute_negative_compensations(
     return anom_df
 
 
+def detect_phantom_totalizer_jumps(df: pd.DataFrame, total_columns=None, threshold=1000000) -> pd.DataFrame:
+    """Detect and mark phantom jumps in totalizer as anomalies (consumption = 0).
+    
+    Phantom jumps are large changes in the totalizer that don't represent real consumption:
+    - Large change in totalizer (> threshold, default 1 million)
+    - Consumption calculated is anomalously high
+    - Often the totalizer returns to a similar value shortly after
+    
+    These are marked with consumption = 0 in the anomaly column.
+    
+    Parameters:
+    -----------
+    df : pd.DataFrame
+        DataFrame with totalizer and consumption columns
+    total_columns : list, optional
+        Columns to check for phantom jumps
+    threshold : int, default=1000000
+        Minimum consumption value to consider as potential phantom jump (1 million)
+        
+    Returns:
+    --------
+    pd.DataFrame
+        DataFrame with phantom jumps marked in _anom columns
+    """
+    if total_columns is None:
+        rect_cols = [c for c in df.columns if c.endswith("_rect_0")]
+        if rect_cols:
+            total_columns = rect_cols
+        else:
+            total_columns = [c for c in df.columns if c.endswith("_TOT")]
+    
+    result = df.copy()
+    
+    for total_col in total_columns:
+        cons_col = f"{total_col}_cons"
+        anom_col = f"{total_col}_anom"
+        
+        if cons_col not in df.columns:
+            continue
+            
+        print(f"Checking for phantom jumps in {total_col}...")
+        
+        # Find consumptions above threshold
+        high_cons_mask = df[cons_col] > threshold
+        high_cons_indices = df[high_cons_mask].index
+        
+        phantom_count = 0
+        
+        for idx in high_cons_indices:
+            pos = df.index.get_loc(idx)
+            
+            # Need at least 10 minutes before and after for reliable detection
+            if pos < 10 or pos >= len(df) - 10:
+                continue
+            
+            # Get totalizer values in window
+            tot_before = df[total_col].iloc[pos - 10:pos].values
+            tot_current = df[total_col].iloc[pos]
+            tot_after = df[total_col].iloc[pos + 1:pos + 11].values
+            
+            # Check if totalizer was stable before (all same value or very close)
+            if len(tot_before) > 0 and len(tot_after) > 0:
+                # Check stability: all values within 10 units
+                before_stable = (tot_before.max() - tot_before.min()) < 10
+                after_stable = (tot_after.max() - tot_after.min()) < 10
+
+                if before_stable and after_stable:
+                    avg_before = tot_before.mean()
+                    avg_after = tot_after.mean()
+                    delta = abs(avg_before - avg_after)
+                    future_cons = df[cons_col].iloc[pos + 1 : pos + 11].abs().max()
+
+                    reverts_to_previous = delta < abs(0.01 * max(avg_before, 1))
+                    large_step_flat_future = delta > threshold and (future_cons < 10)
+
+                    if reverts_to_previous or large_step_flat_future:
+                        # This is a phantom jump - mark consumption as 0
+                        if anom_col not in result.columns:
+                            result[anom_col] = np.nan
+
+                        result.loc[idx, anom_col] = 0.0
+                        phantom_count += 1
+                        reason = (
+                            "revert" if reverts_to_previous else "flat-after jump"
+                        )
+                        print(
+                            f"  Phantom jump detected ({reason}) at {idx}: {df[cons_col].loc[idx]:.0f} → 0"
+                        )
+        
+        if phantom_count > 0:
+            print(f"  Total phantom jumps corrected: {phantom_count}")
+    
+    return result
+
+
 def attach_anomalies_to_df(df: pd.DataFrame, total_columns=None) -> pd.DataFrame:
     """Compute anomaly columns and attach them to df (in-place-like, returns df).
 

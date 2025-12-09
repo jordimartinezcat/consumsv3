@@ -70,25 +70,19 @@ def get_db_connection(cfg=None):
 
 
 def get_tag_id(engine, tag_name):
-    """
-    Query ga_landing.cfg_tags to get the idtag for a given tag name.
+    """Return idTag for a consumption tag, preferring ite_tags_consums if available."""
 
-    Args:
-        engine (sqlalchemy.engine.Engine): Database engine
-        tag_name (str): Tag name (e.g., 'PBD07_FTR_T01_CSM')
-
-    Returns:
-        int: idtag if found
-
-    Raises:
-        ValueError: If tag not found in cfg_tags
-    """
     query = text(
         """
-        SELECT "idTag" 
-        FROM ga_landing.cfg_tags 
+        SELECT "idTag"
+        FROM ga_landing.ite_tags_consums
         WHERE tag = :tag_name
-    """
+        UNION ALL
+        SELECT "idTag"
+        FROM ga_landing.cfg_tags
+        WHERE tag = :tag_name
+        LIMIT 1
+        """
     )
 
     try:
@@ -97,7 +91,9 @@ def get_tag_id(engine, tag_name):
             row = result.fetchone()
 
             if row is None:
-                raise ValueError(f"Tag '{tag_name}' not found in ga_landing.cfg_tags")
+                raise ValueError(
+                    f"Tag '{tag_name}' not found in ite_tags_consums nor cfg_tags"
+                )
 
             idtag = int(row[0])
             logging.info(f"Found idtag={idtag} for tag '{tag_name}'")

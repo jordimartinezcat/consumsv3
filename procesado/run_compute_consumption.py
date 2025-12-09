@@ -14,6 +14,7 @@ from compute_consumption import (
     append_minute_consumption,
     attach_anomalies_to_df,
     detect_counter_resets,
+    detect_phantom_totalizer_jumps,
 )
 
 
@@ -72,8 +73,13 @@ def main():
         print("Generating anomaly columns...")
         result = attach_anomalies_to_df(result)
 
-    # Step 3: Detect and mark counter resets (this happens AFTER regular anomalies)
+    # Step 3: Detect and mark counter resets (runs before phantom jump handling)
+    print("\n--- Detecting counter resets ---")
     result = detect_counter_resets(result)
+
+    # Step 4: Detect phantom totalizer jumps (last anomaly pass)
+    print("\n--- Detecting phantom totalizer jumps ---")
+    result = detect_phantom_totalizer_jumps(result, threshold=1000000)
 
     # Count final anomalies
     total_anomalies = sum(result[col].notna().sum() for col in anom_cols)

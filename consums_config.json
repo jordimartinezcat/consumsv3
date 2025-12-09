@@ -35,11 +35,11 @@
         {
             "name": "fetch_api_data",
             "enabled": true,
-            "filter":"PBD07"
+            "filter":"VVD05"
         },
         {
             "name": "push_to_pg_datalake",
-            "enabled": false
+            "enabled": true
         },
         {
             "name": "save_to_csv",

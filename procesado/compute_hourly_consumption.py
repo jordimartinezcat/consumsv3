@@ -166,23 +166,25 @@ def process_latest_minute_data(root_path=None):
     latest_file = max(files, key=os.path.getmtime)
     print(f"Procesando archivo: {latest_file}")
 
-    # Cargar datos minutales con detección de formato
-    try:
-        # Intentar formato estándar primero
-        df_minutes = pd.read_csv(latest_file)
-        print("Cargado CSV con formato estándar")
-    except Exception as e1:
+    # Cargar datos minutales intentando primero el formato europeo que usa el pipeline
+    loaders = [
+        ("europeo", {"sep": ";", "decimal": ","}),
+        ("estándar", {}),
+        ("autodetectado", {"sep": None, "engine": "python"}),
+    ]
+
+    last_error = None
+    for label, kwargs in loaders:
         try:
-            # Intentar formato europeo
-            df_minutes = pd.read_csv(latest_file, sep=";", decimal=",")
-            print('Cargado CSV con formato europeo (sep=";", decimal=",")')
-        except Exception as e2:
-            # Usar detección automática como último recurso
-            print(
-                f"Formatos estándar y europeo fallaron, usando detección automática..."
-            )
-            df_minutes = pd.read_csv(latest_file, sep=None, engine="python")
-            print("Cargado CSV con formato autodetectado")
+            df_minutes = pd.read_csv(latest_file, **kwargs)
+            print(f"Cargado CSV con formato {label}")
+            break
+        except Exception as exc:
+            last_error = exc
+    else:  # no break
+        raise RuntimeError(
+            f"No se pudo cargar {latest_file} con ningún formato conocido: {last_error}"
+        )
 
     print(f"Datos minutales cargados. Shape: {df_minutes.shape}")
     print(f"Columnas: {list(df_minutes.columns)}")
