@@ -173,10 +173,29 @@ print(df.head())
 
 # Aquí puedes continuar con el procesamiento, por ejemplo, combinar 16/32 bits o calcular consumos
 # Combinar pares TOT_H / TOT_L en una sola columna TOT
-def combine_tot_high_low(df):
+def combine_tot_high_low(df, near_zero_threshold=1000, max_reasonable_consumption=100000):
+    """
+    Combina TOT_H y TOT_L en totalizador de 32 bits con detección de saltos anómalos.
+    
+    Un reset real debe cumplir:
+    - Consumo muy negativo
+    - Valor del totalizador después del salto cercano a 0
+    
+    Si no cumple, es un salto anómalo y se marca para corrección (consumo = 0).
+    
+    Parameters:
+    -----------
+    df : pd.DataFrame
+        DataFrame con columnas TOT_H y TOT_L
+    near_zero_threshold : int
+        Umbral para considerar que el totalizador está "cerca de 0" después de un reset
+    max_reasonable_consumption : int
+        Consumo máximo razonable por minuto para detectar posibles saltos
+    """
     cols = list(df.columns)
     combined = df.copy()
     processed = set()
+    
     for col in cols:
         if col in processed:
             continue
@@ -184,6 +203,8 @@ def combine_tot_high_low(df):
             base = col[:-6]  # remove _TOT_H
             low_col = base + "_TOT_L"
             tot_col = base + "_TOT"
+            anomaly_col = base + "_TOT_is_anomalous_jump"
+            
             if low_col in combined.columns:
                 # Combine high and low 16-bit parts into 32-bit unsigned int
                 import numpy as np
@@ -196,6 +217,79 @@ def combine_tot_high_low(df):
                 # Mask low to 16 bits and shift high
                 result_arr = (high_arr << 16) | (low_arr & 0xFFFF)
                 combined[tot_col] = pd.Series(result_arr, index=combined.index)
+                
+                # Detectar saltos anómalos
+                tot_diff = combined[tot_col].diff()
+                is_anomalous_jump = pd.Series(False, index=combined.index)
+                
+                # Buscar consumos muy negativos (posibles resets o saltos)
+                possible_resets = tot_diff < -max_reasonable_consumption
+                reset_indices = combined[possible_resets].index
+                
+                anomaly_count = 0
+                reset_count = 0
+                
+                for idx in reset_indices:
+                    pos = combined.index.get_loc(idx)
+                    if pos == 0:
+                        continue
+                    
+                    tot_before = combined[tot_col].iloc[pos - 1]
+                    tot_after = combined[tot_col].iloc[pos]
+                    
+                    # Validar si es reset real (totalizador después cerca de 0)
+                    if abs(tot_after) <= near_zero_threshold:
+                        # Verificar si el totalizador incrementa después del reset de forma consistente
+                        # (ventana de 90 minutos para verificar comportamiento estable)
+                        window_size = min(90, len(combined) - pos - 1)
+                        incrementa_de_forma_estable = False
+                        
+                        if window_size > 10:
+                            window_values = combined[tot_col].iloc[pos:pos+window_size+1].values
+                            
+                            # Buscar primer valor >100 después del reset
+                            first_nonzero_idx = None
+                            for i, val in enumerate(window_values[1:], start=1):
+                                if val > 100:
+                                    first_nonzero_idx = i
+                                    break
+                            
+                            if first_nonzero_idx is not None:
+                                # Verificar que el tiempo hasta incrementar sea razonable (<60 minutos)
+                                # y que después incremente de forma consistente
+                                if first_nonzero_idx <= 60:
+                                    # Verificar estabilidad: al menos 5 valores consecutivos >0 después
+                                    valores_despues = window_values[first_nonzero_idx:first_nonzero_idx+5]
+                                    if len(valores_despues) >= 5 and all(v > 0 for v in valores_despues):
+                                        incrementa_de_forma_estable = True
+                        
+                        if incrementa_de_forma_estable:
+                            # Es un reset REAL - el totalizador vuelve a incrementar
+                            reset_count += 1
+                        else:
+                            # El totalizador NO incrementa de forma estable → FALLO DE HARDWARE
+                            is_anomalous_jump.iloc[pos] = True
+                            anomaly_count += 1
+                            logging.warning(
+                                f"Salto anómalo detectado en {base} en {idx}: "
+                                f"TOT cae de {tot_before:,.0f} a {tot_after:,.0f} pero NO incrementa de forma estable (fallo hardware)"
+                            )
+                    else:
+                        # Es un SALTO ANÓMALO - marcar para corrección
+                        is_anomalous_jump.iloc[pos] = True
+                        anomaly_count += 1
+                        logging.warning(
+                            f"Salto anómalo detectado en {base} en {idx}: "
+                            f"TOT después del salto = {tot_after:,.0f} (no es reset real)"
+                        )
+                
+                combined[anomaly_col] = is_anomalous_jump
+                
+                if anomaly_count > 0:
+                    logging.info(
+                        f"{base}: Detectados {reset_count} resets reales y {anomaly_count} saltos anómalos"
+                    )
+                
                 processed.add(col)
                 processed.add(low_col)
                 # Optionally drop the original H/L columns

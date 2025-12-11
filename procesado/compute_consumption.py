@@ -2,14 +2,28 @@ import numpy as np
 import pandas as pd
 
 
-def detect_counter_resets(df: pd.DataFrame, total_columns=None) -> pd.DataFrame:
+def detect_counter_resets(df: pd.DataFrame, total_columns=None, near_zero_threshold=1000) -> pd.DataFrame:
     """Detect counter resets in totalizer columns and mark corrections in anomaly columns.
+    
+    Solo trata como reset si el totalizador después del salto está cerca de 0.
+    Si no está cerca de 0, es un salto anómalo y NO se corrige.
+
+    Parameters:
+    -----------
+    df : pd.DataFrame
+        DataFrame with totalizer columns
+    total_columns : list, optional
+        List of totalizer columns to check
+    near_zero_threshold : int, default=1000
+        Threshold to consider totalizer "near zero" after a reset
 
     Returns:
     --------
     pd.DataFrame
         Copy of df with reset corrections marked in anomaly columns
     """
+    import logging
+    
     if total_columns is None:
         # Prefer rectified totals if available, otherwise use raw *_TOT
         rect_cols = [c for c in df.columns if c.endswith("_rect_0")]
@@ -33,10 +47,15 @@ def detect_counter_resets(df: pd.DataFrame, total_columns=None) -> pd.DataFrame:
         reset_indices = reset_mask[reset_mask].index
 
         if len(reset_indices) > 0:
-            print(f"  Found {len(reset_indices)} potential counter resets")
+            print(f"  Found {len(reset_indices)} potential counter resets/jumps")
 
             anom_col = f"{col}_anom"
+            anomalous_jump_col = col + "_is_anomalous_jump"
+            
             if anom_col in result.columns:
+                real_resets = 0
+                anomalous_jumps = 0
+                
                 for reset_idx in reset_indices:
                     # Get position in array
                     reset_pos = totals.index.get_loc(reset_idx)
@@ -44,23 +63,49 @@ def detect_counter_resets(df: pd.DataFrame, total_columns=None) -> pd.DataFrame:
                         prev_value = totals.iloc[reset_pos]
                         curr_value = totals.iloc[reset_pos + 1]
 
-                        print(
-                            f"  Reset detected at index {reset_idx} (pos {reset_pos}): {prev_value} → {curr_value}"
-                        )
+                        # Validar si es reset REAL (totalizador después cerca de 0)
+                        is_real_reset = abs(curr_value) <= near_zero_threshold
+                        
+                        if is_real_reset:
+                            # Es un RESET REAL
+                            print(
+                                f"  ✓ Reset REAL detectado en {reset_idx} (pos {reset_pos}): {prev_value} → {curr_value}"
+                            )
 
-                        # Estimate counter maximum (usually power of 10: 10^7, 10^8, 10^9)
-                        counter_max = determine_counter_max(prev_value)
+                            # Estimate counter maximum (usually power of 10: 10^7, 10^8, 10^9)
+                            counter_max = determine_counter_max(prev_value)
 
-                        # Calculate actual consumption during reset
-                        actual_consumption = (counter_max - prev_value) + curr_value
-                        print(f"    Estimated counter maximum: {counter_max}")
-                        print(
-                            f"    Actual consumption during reset: {actual_consumption}"
-                        )
+                            # Calculate actual consumption during reset
+                            actual_consumption = (counter_max - prev_value) + curr_value
+                            print(f"    Estimated counter maximum: {counter_max}")
+                            print(
+                                f"    Actual consumption during reset: {actual_consumption}"
+                            )
 
-                        # Mark the correction in the anomaly column at the reset minute
-                        result.loc[reset_idx, anom_col] = actual_consumption
-                        print(f"    Marked correction in {anom_col} at {reset_idx}")
+                            # Mark the correction in the anomaly column at the reset minute
+                            result.loc[reset_idx, anom_col] = actual_consumption
+                            print(f"    Marked correction in {anom_col} at {reset_idx}")
+                            real_resets += 1
+                        else:
+                            # Es un SALTO ANÓMALO - NO corregir
+                            # Verificar si ya está marcado desde combine_tot_high_low
+                            if anomalous_jump_col in result.columns:
+                                is_marked = result.loc[result.index[reset_pos + 1], anomalous_jump_col]
+                                if is_marked:
+                                    print(
+                                        f"  ⚠️  Salto anómalo YA MARCADO en {reset_idx}: {prev_value} → {curr_value} (no es reset)"
+                                    )
+                                else:
+                                    logging.warning(
+                                        f"Salto anómalo NO marcado previamente en {reset_idx}: {prev_value} → {curr_value}"
+                                    )
+                            else:
+                                print(
+                                    f"  ⚠️  Salto anómalo detectado en {reset_idx}: {prev_value} → {curr_value} (no es reset, NO se corrige)"
+                                )
+                            anomalous_jumps += 1
+                
+                print(f"  Resumen: {real_resets} resets reales, {anomalous_jumps} saltos anómalos (no corregidos)")
 
     return result
 
@@ -115,7 +160,11 @@ def append_minute_consumption(df: pd.DataFrame, total_columns=None) -> pd.DataFr
 
     Keeps original columns and appends `<col>_cons` for each total column.
     Returns the dataframe ready for reset detection (without applying it yet).
+    
+    Si existe columna *_is_anomalous_jump, corrige el consumo a 0 en esos puntos.
     """
+    import logging
+    
     # Compute normal consumption
     cons = compute_minute_consumption(df, total_columns=total_columns)
 
@@ -123,6 +172,33 @@ def append_minute_consumption(df: pd.DataFrame, total_columns=None) -> pd.DataFr
     result = df.copy()
     for c in cons.columns:
         result[c] = cons[c]
+    
+    # Aplicar correcciones de saltos anómalos si existen
+    if total_columns is None:
+        rect_cols = [c for c in df.columns if c.endswith("_rect_0")]
+        if rect_cols:
+            total_columns = rect_cols
+        else:
+            total_columns = [c for c in df.columns if c.endswith("_TOT")]
+    
+    for col in total_columns:
+        cons_col = f"{col}_cons"
+        anomaly_col = col + "_is_anomalous_jump"
+        
+        if anomaly_col in result.columns and cons_col in result.columns:
+            # Corregir consumo a 0 donde hay saltos anómalos
+            anomaly_mask = result[anomaly_col] == True
+            num_anomalies = anomaly_mask.sum()
+            
+            if num_anomalies > 0:
+                consumption_original = result[cons_col].copy()
+                result.loc[anomaly_mask, cons_col] = 0.0
+                
+                total_eliminated = consumption_original.loc[anomaly_mask].sum()
+                logging.info(
+                    f"{col}: Corregidos {num_anomalies} saltos anómalos en consumo, "
+                    f"eliminado: {total_eliminated:,.0f}"
+                )
 
     return result
 

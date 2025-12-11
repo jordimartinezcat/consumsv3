@@ -99,8 +99,9 @@ def aggregate_to_hourly(df_minutes):
                     # Si hay anomalías, calcular consumo minuto a minuto con correcciones
                     real_consumption = 0.0
                     for idx, row in hour_data.iterrows():
-                        if pd.notna(row[anom_col]):
-                            # Usar valor de corrección
+                        if pd.notna(row[anom_col]) and row[anom_col] != 0:
+                            # La columna _anom contiene el consumo CORREGIDO para este minuto
+                            # (reemplaza el valor de cons_col que puede ser negativo)
                             real_consumption += row[anom_col]
                         else:
                             # Usar consumo original

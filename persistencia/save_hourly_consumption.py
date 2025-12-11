@@ -163,18 +163,23 @@ def get_latest_hourly_file(data_dir=None):
 def convert_tag_name_to_csm(tag_total):
     """
     Convert totalizer tag name to consumption tag name.
-    Example: PBD07_FTR_T01_TOT → PBD07_FTR_T01_CSM
+    Example: CL_CAT_PBD07_FTR_T01_TOT → PBD07_FTR_T01_CSM
+            (removes CL_CAT_ prefix and replaces _TOT with _CSM)
 
     Args:
-        tag_total (str): Tag name ending with _TOT
+        tag_total (str): Tag name ending with _TOT (may include CL_CAT_ prefix)
 
     Returns:
-        str: Tag name ending with _CSM
+        str: Tag name ending with _CSM (without CL_CAT_ prefix)
     """
     if not tag_total.endswith("_TOT"):
         raise ValueError(f"Tag '{tag_total}' does not end with '_TOT'")
 
-    return tag_total.replace("_TOT", "_CSM")
+    # Remove CL_CAT_ prefix if present
+    tag_without_prefix = tag_total.replace("CL_CAT_", "")
+    
+    # Replace _TOT with _CSM
+    return tag_without_prefix.replace("_TOT", "_CSM")
 
 
 def save_hourly_to_db(csv_path=None, cfg=None):
@@ -237,176 +242,218 @@ def save_hourly_to_db(csv_path=None, cfg=None):
     total_upserts = 0
     total_corrections = 0
     insertion_time = datetime.now()
+    
+    # Tracking de señales procesadas
+    successful_signals = []
+    missing_signals = []
+    error_signals = []
 
     for base_tag, source_col, corrected_col, flag_col in consumption_sources:
         logging.info(
             "Processing raw consumption column for %s (%s)", base_tag, source_col
         )
-        # Convert _TOT to _CSM
-        csm_tag = convert_tag_name_to_csm(base_tag)
-        logging.info(f"Processing tag: {base_tag} → {csm_tag}")
-
-        # Get idtag from cfg_tags
+        
         try:
-            idtag = get_tag_id(db, csm_tag)
-        except ValueError as e:
-            logging.error(str(e))
-            raise
+            # Convert _TOT to _CSM
+            csm_tag = convert_tag_name_to_csm(base_tag)
+            logging.info(f"Processing tag: {base_tag} → {csm_tag}")
 
-        # Prepare data for insertion
-        records_to_insert = []
-        correction_records = []
-        for _, row in df.iterrows():
-            timestamp_raw = row["timeStamp"]
-            value = row[source_col]
-
-            # Skip NaN values
-            if pd.isna(value):
-                continue
-
+            # Get idtag from cfg_tags
             try:
-                local_ts = to_local_timestamp(timestamp_raw)
-            except ValueError as exc:
-                logging.warning(
-                    "Skipping timestamp %s for %s: %s", timestamp_raw, base_tag, exc
-                )
+                idtag = get_tag_id(db, csm_tag)
+            except ValueError as e:
+                logging.warning(f"⚠️  Tag not found in cfg_tags: {csm_tag}")
+                missing_signals.append(csm_tag)
                 continue
 
-            raw_value = float(value)
+            # Prepare data for insertion
+            records_to_insert = []
+            correction_records = []
+            for _, row in df.iterrows():
+                timestamp_raw = row["timeStamp"]
+                value = row[source_col]
 
-            records_to_insert.append(
-                {
-                    "data": local_ts,
-                    "data_insercio": insertion_time,
-                    "idtag": int(idtag),
-                    "valor": raw_value,
-                }
-            )
+                # Skip NaN values
+                if pd.isna(value):
+                    continue
 
-            if corrected_col and flag_col and flag_col in df.columns:
-                flag_value = row[flag_col]
-                has_corr = pd.notna(flag_value) and bool(flag_value)
-            else:
-                has_corr = False
-
-            if not corrected_col or not has_corr:
-                continue
-
-            corrected_value = row[corrected_col]
-            if pd.isna(corrected_value):
-                continue
-
-            corrected_value = float(corrected_value)
-            if math.isclose(corrected_value, raw_value, rel_tol=1e-9, abs_tol=1e-6):
-                continue
-
-            descrip = f"Script correction: {raw_value:.3f} → {corrected_value:.3f}"
-            correction_records.append(
-                {
-                    "data": local_ts,
-                    "data_insercio": insertion_time,
-                    "idtag": int(idtag),
-                    "valor": corrected_value,
-                    "tipus": 1,
-                    "descrip": descrip,
-                }
-            )
-
-        logging.info(
-            f"Inserting {len(records_to_insert)} records for tag {csm_tag} (idtag={idtag})"
-        )
-
-        # Execute batch upsert using SQLAlchemy
-        try:
-            insert_sql = text(
-                """
-                INSERT INTO ga_datalake.ite_consums_data
-                    (data, data_insercio, idtag, valor)
-                VALUES
-                    (:data, :data_insercio, :idtag, :valor)
-                ON CONFLICT (data, idtag)
-                DO UPDATE SET
-                    valor = EXCLUDED.valor,
-                    data_insercio = EXCLUDED.data_insercio
-                """
-            )
-
-            with db.connect() as conn:
-                conn.execute(insert_sql, records_to_insert)
-                conn.commit()
-
-            total_upserts += len(records_to_insert)
-            logging.info(f"Upserted {len(records_to_insert)} records for {csm_tag}")
-        except Exception as e:
-            logging.error(f"Failed to insert records for {csm_tag}: {e}")
-            raise
-
-        # Delete existing corrections for this period/tag before inserting new ones
-        # This ensures old erroneous corrections don't persist
-        if records_to_insert:
-            try:
-                timestamps = [r["data"] for r in records_to_insert]
-                min_date = min(timestamps)
-                max_date = max(timestamps)
-
-                delete_sql = text(
-                    """
-                    DELETE FROM ga_datalake.ite_consums_datarect
-                    WHERE idtag = :idtag
-                      AND tipus = 1
-                      AND data >= :min_date
-                      AND data <= :max_date
-                    """
-                )
-
-                with db.connect() as conn:
-                    result = conn.execute(
-                        delete_sql,
-                        {"idtag": idtag, "min_date": min_date, "max_date": max_date},
+                try:
+                    local_ts = to_local_timestamp(timestamp_raw)
+                except ValueError as exc:
+                    logging.warning(
+                        "Skipping timestamp %s for %s: %s", timestamp_raw, base_tag, exc
                     )
-                    deleted_count = result.rowcount
-                    conn.commit()
+                    continue
 
-                logging.info(
-                    f"Deleted {deleted_count} existing correction(s) for idtag={idtag} "
-                    f"between {min_date} and {max_date}"
-                )
-            except Exception as exc:
-                logging.error(
-                    "Failed to delete existing corrections for %s: %s", csm_tag, exc
-                )
-                raise
+                raw_value = float(value)
 
-        if correction_records:
+                records_to_insert.append(
+                    {
+                        "data": local_ts,
+                        "data_insercio": insertion_time,
+                        "idtag": int(idtag),
+                        "valor": raw_value,
+                    }
+                )
+
+                if corrected_col and flag_col and flag_col in df.columns:
+                    flag_value = row[flag_col]
+                    has_corr = pd.notna(flag_value) and bool(flag_value)
+                else:
+                    has_corr = False
+
+                if not corrected_col or not has_corr:
+                    continue
+
+                corrected_value = row[corrected_col]
+                if pd.isna(corrected_value):
+                    continue
+
+                corrected_value = float(corrected_value)
+                if math.isclose(corrected_value, raw_value, rel_tol=1e-9, abs_tol=1e-6):
+                    continue
+
+                descrip = f"Script correction: {raw_value:.3f} → {corrected_value:.3f}"
+                correction_records.append(
+                    {
+                        "data": local_ts,
+                        "data_insercio": insertion_time,
+                        "idtag": int(idtag),
+                        "valor": corrected_value,
+                        "tipus": 1,
+                        "descrip": descrip,
+                    }
+                )
+
             logging.info(
-                "Inserting %d corrected records into ga_datalake.ite_consums_datarect",
-                len(correction_records),
+                f"Inserting {len(records_to_insert)} records for tag {csm_tag} (idtag={idtag})"
             )
 
-            correction_sql = text(
-                """
-                INSERT INTO ga_datalake.ite_consums_datarect
-                    (data, data_insercio, idtag, valor, tipus, descrip)
-                VALUES
-                    (:data, :data_insercio, :idtag, :valor, :tipus, :descrip)
-                ON CONFLICT (data, idtag, tipus)
-                DO UPDATE SET
-                    valor = EXCLUDED.valor,
-                    data_insercio = EXCLUDED.data_insercio,
-                    descrip = EXCLUDED.descrip
-                """
-            )
-
+            # Execute batch upsert using SQLAlchemy
             try:
-                with db.connect() as conn:
-                    conn.execute(correction_sql, correction_records)
-                    conn.commit()
-                total_corrections += len(correction_records)
-            except Exception as exc:
-                logging.error(
-                    "Failed to insert correction records for %s: %s", csm_tag, exc
+                insert_sql = text(
+                    """
+                    INSERT INTO ga_datalake.ite_consums_data
+                        (data, data_insercio, idtag, valor)
+                    VALUES
+                        (:data, :data_insercio, :idtag, :valor)
+                    ON CONFLICT (data, idtag)
+                    DO UPDATE SET
+                        valor = EXCLUDED.valor,
+                        data_insercio = EXCLUDED.data_insercio
+                    """
                 )
-                raise
+
+                with db.connect() as conn:
+                    conn.execute(insert_sql, records_to_insert)
+                    conn.commit()
+
+                total_upserts += len(records_to_insert)
+                logging.info(f"Upserted {len(records_to_insert)} records for {csm_tag}")
+            except Exception as e:
+                logging.error(f"Failed to insert records for {csm_tag}: {e}")
+                error_signals.append(csm_tag)
+                continue
+
+            # Delete existing corrections for this period/tag before inserting new ones
+            # This ensures old erroneous corrections don't persist
+            if records_to_insert:
+                try:
+                    timestamps = [r["data"] for r in records_to_insert]
+                    min_date = min(timestamps)
+                    max_date = max(timestamps)
+
+                    delete_sql = text(
+                        """
+                        DELETE FROM ga_datalake.ite_consums_datarect
+                        WHERE idtag = :idtag
+                          AND tipus = 1
+                          AND data >= :min_date
+                          AND data <= :max_date
+                        """
+                    )
+
+                    with db.connect() as conn:
+                        result = conn.execute(
+                            delete_sql,
+                            {"idtag": idtag, "min_date": min_date, "max_date": max_date},
+                        )
+                        deleted_count = result.rowcount
+                        conn.commit()
+
+                    logging.info(
+                        f"Deleted {deleted_count} existing correction(s) for idtag={idtag} "
+                        f"between {min_date} and {max_date}"
+                    )
+                except Exception as exc:
+                    logging.error(
+                        "Failed to delete existing corrections for %s: %s", csm_tag, exc
+                    )
+                    error_signals.append(csm_tag)
+                    continue
+
+            if correction_records:
+                logging.info(
+                    "Inserting %d corrected records into ga_datalake.ite_consums_datarect",
+                    len(correction_records),
+                )
+
+                correction_sql = text(
+                    """
+                    INSERT INTO ga_datalake.ite_consums_datarect
+                        (data, data_insercio, idtag, valor, tipus, descrip)
+                    VALUES
+                        (:data, :data_insercio, :idtag, :valor, :tipus, :descrip)
+                    ON CONFLICT (data, idtag, tipus)
+                    DO UPDATE SET
+                        valor = EXCLUDED.valor,
+                        data_insercio = EXCLUDED.data_insercio,
+                        descrip = EXCLUDED.descrip
+                    """
+                )
+
+                try:
+                    with db.connect() as conn:
+                        conn.execute(correction_sql, correction_records)
+                        conn.commit()
+                    total_corrections += len(correction_records)
+                except Exception as exc:
+                    logging.error(
+                        "Failed to insert correction records for %s: %s", csm_tag, exc
+                    )
+                    error_signals.append(csm_tag)
+                    continue
+            
+            # Añadir a señales exitosas
+            successful_signals.append(csm_tag)
+            
+        except Exception as e:
+            logging.error(f"❌ Unexpected error processing {base_tag}: {str(e)}")
+            error_signals.append(base_tag)
+            continue
+
+    # Resumen final
+    logging.info("\n" + "="*80)
+    logging.info("RESUMEN DE INSERCIÓN EN POSTGRESQL")
+    logging.info("="*80)
+    logging.info(f"✓ Señales insertadas correctamente: {len(successful_signals)}")
+    logging.info(f"  Total registros: {total_upserts}")
+    logging.info(f"  Total correcciones: {total_corrections}")
+    
+    if missing_signals:
+        logging.warning(f"\n⚠️  Señales NO encontradas en cfg_tags ({len(missing_signals)}):")
+        for signal in sorted(set(missing_signals)):
+            logging.warning(f"   - {signal}")
+    
+    if error_signals:
+        logging.error(f"\n❌ Señales con errores durante inserción ({len(set(error_signals))}):")
+        for signal in sorted(set(error_signals)):
+            logging.error(f"   - {signal}")
+    
+    if not missing_signals and not error_signals:
+        logging.info("\n✓ Todas las señales fueron procesadas correctamente")
+    
+    logging.info("="*80 + "\n")
 
     logging.info(f"Total records upserted: {total_upserts}")
     logging.info(f"Total corrections upserted: {total_corrections}")
