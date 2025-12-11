@@ -55,8 +55,39 @@ def combine_tot_high_low(df, near_zero_threshold=1000, max_reasonable_consumptio
                 tot_diff = combined[tot_col].diff()
                 is_anomalous_jump = pd.Series(False, index=combined.index)
                 
-                possible_resets = tot_diff < -max_reasonable_consumption
+                # Debug: ver qué pasa en 07:52
+                print("\nDEBUG: Valores alrededor de 07:52")
+                mask_debug = (combined['timeStamp'] >= '2025-08-12 07:50') & (combined['timeStamp'] <= '2025-08-12 07:54')
+                tot_current = combined[tot_col]
+                tot_previous = combined[tot_col].shift(1)
+                print(combined[mask_debug][['timeStamp']].assign(
+                    tot_current=tot_current[mask_debug],
+                    tot_previous=tot_previous[mask_debug],
+                    tot_diff=tot_diff[mask_debug]
+                ).to_string(index=False))
+                
+                very_negative = tot_diff < -max_reasonable_consumption
+                
+                tot_current = combined[tot_col]
+                tot_previous = combined[tot_col].shift(1)
+                
+                falls_to_near_zero = (
+                    (tot_diff < -1000) &
+                    (tot_current <= near_zero_threshold) &
+                    (tot_previous > 1000)
+                )
+                
+                print(f"\nCondiciones en 07:52:")
+                idx_0752 = combined[combined['timeStamp'] == '2025-08-12 07:52:00'].index[0]
+                print(f"  tot_diff < -1000: {tot_diff.iloc[idx_0752]} < -1000 = {tot_diff.iloc[idx_0752] < -1000}")
+                print(f"  tot_current <= {near_zero_threshold}: {tot_current.iloc[idx_0752]} <= {near_zero_threshold} = {tot_current.iloc[idx_0752] <= near_zero_threshold}")
+                print(f"  tot_previous > 1000: {tot_previous.iloc[idx_0752]} > 1000 = {tot_previous.iloc[idx_0752] > 1000}")
+                print(f"  falls_to_near_zero: {falls_to_near_zero.iloc[idx_0752]}")
+                
+                possible_resets = very_negative | falls_to_near_zero
                 reset_indices = combined[possible_resets].index
+                
+                print(f"\nTotal possible_resets encontrados: {len(reset_indices)}")
                 
                 anomaly_count = 0
                 reset_count = 0
@@ -90,15 +121,15 @@ def combine_tot_high_low(df, near_zero_threshold=1000, max_reasonable_consumptio
                         
                         if incrementa_de_forma_estable:
                             reset_count += 1
-                            print(f"  ✓ Reset real en {combined['timeStamp'].iloc[pos]}: TOT incrementa de forma estable después")
+                            print(f"  [OK] Reset real en {combined['timeStamp'].iloc[pos]}: TOT incrementa de forma estable despues")
                         else:
                             is_anomalous_jump.iloc[pos] = True
                             anomaly_count += 1
-                            print(f"  ⚠️ ANOMALÍA en {combined['timeStamp'].iloc[pos]}: TOT cae de {tot_before:,.0f} a {tot_after:,.0f} pero NO incrementa de forma estable")
+                            print(f"  [ANOMALIA] en {combined['timeStamp'].iloc[pos]}: TOT cae de {tot_before:,.0f} a {tot_after:,.0f} pero NO incrementa de forma estable")
                     else:
                         is_anomalous_jump.iloc[pos] = True
                         anomaly_count += 1
-                        print(f"  ⚠️ ANOMALÍA en {combined['timeStamp'].iloc[pos]}: TOT después = {tot_after:,.0f} (no cerca de 0)")
+                        print(f"  [ANOMALIA] en {combined['timeStamp'].iloc[pos]}: TOT despues = {tot_after:,.0f} (no cerca de 0)")
                 
                 combined[anomaly_col] = is_anomalous_jump
                 

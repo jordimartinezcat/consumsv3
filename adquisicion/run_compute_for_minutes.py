@@ -222,8 +222,24 @@ def combine_tot_high_low(df, near_zero_threshold=1000, max_reasonable_consumptio
                 tot_diff = combined[tot_col].diff()
                 is_anomalous_jump = pd.Series(False, index=combined.index)
                 
-                # Buscar consumos muy negativos (posibles resets o saltos)
-                possible_resets = tot_diff < -max_reasonable_consumption
+                # Buscar consumos negativos que podrían ser resets o saltos anómalos:
+                # 1. Consumos muy negativos (< -max_reasonable_consumption) 
+                # 2. Cualquier caída hacia valores cercanos a 0 desde valores >1000
+                very_negative = tot_diff < -max_reasonable_consumption
+                
+                # Detectar caídas a valores cercanos a 0 desde valores altos
+                # diff() calcula current - previous, entonces diff negativo significa current < previous
+                # Si current está cerca de 0 y previous era alto, es sospechoso
+                tot_current = combined[tot_col]
+                tot_previous = combined[tot_col].shift(1)
+                
+                falls_to_near_zero = (
+                    (tot_diff < -1000) &  # caída significativa (diff negativo > 1000)
+                    (tot_current <= near_zero_threshold) &  # valor actual cerca de 0
+                    (tot_previous > 1000)  # valor anterior era alto
+                )
+                
+                possible_resets = very_negative | falls_to_near_zero
                 reset_indices = combined[possible_resets].index
                 
                 anomaly_count = 0
