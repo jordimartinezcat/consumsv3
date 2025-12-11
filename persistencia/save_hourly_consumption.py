@@ -5,11 +5,13 @@ Reads consumption_hourly CSV files and inserts direct consumption values (not co
 
 import glob
 import logging
+import math
 import os
 import sys
 from datetime import datetime
 
 import pandas as pd
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 # Ajustar path para importar db_connection
@@ -44,8 +46,6 @@ def to_local_timestamp(value):
 def ensure_unique_index(engine):
     """Create the (data,idtag) unique index required for upserts if it doesn't exist."""
 
-    from sqlalchemy import text
-
     stmt = text(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS ux_ite_consums_data_data_idtag
@@ -62,8 +62,6 @@ def ensure_unique_index(engine):
         logging.warning(
             "Duplicate rows detected for (data,idtag); deleting extras before recreating index"
         )
-        from sqlalchemy import text
-
         cleanup_sql = text(
             """
             WITH ranked AS (
@@ -90,32 +88,45 @@ def ensure_unique_index(engine):
         logging.info("Unique index created after cleanup")
 
 
+def ensure_corrections_index(engine):
+    """Ensure corrections table also has the needed unique index."""
+
+    stmt = text(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS ux_ite_consums_datarect_data_idtag_tipus
+        ON ga_datalake.ite_consums_datarect (data, idtag, tipus)
+        """
+    )
+
+    with engine.connect() as conn:
+        conn.execute(stmt)
+        conn.commit()
+    logging.info("Ensured unique index ux_ite_consums_datarect_data_idtag_tipus exists")
+
+
 def find_consumption_sources(df: pd.DataFrame):
-    """Return list of tuples (base_tag, column_name, is_corrected).
+    """Return tuples (base_tag, raw_col, corrected_col, has_flag_col)."""
 
-    Prefer *_hourly_cons_corrected when available; fall back to *_hourly_cons.
-    """
-
-    corrected_suffix = "_hourly_cons_corrected"
     raw_suffix = "_hourly_cons"
+    corrected_suffix = "_hourly_cons_corrected"
+    flag_suffix = "_hourly_has_corrections"
 
     sources = []
 
-    # Track which base tags already mapped via corrected columns
-    mapped = set()
-
     for col in df.columns:
-        if col.endswith(corrected_suffix):
-            base_tag = col[: -len(corrected_suffix)]
-            sources.append((base_tag, col, True))
-            mapped.add(base_tag)
+        if not col.endswith(raw_suffix) or col.endswith(corrected_suffix):
+            continue
 
-    for col in df.columns:
-        if col.endswith(raw_suffix) and not col.endswith(corrected_suffix):
-            base_tag = col[: -len(raw_suffix)]
-            if base_tag in mapped:
-                continue
-            sources.append((base_tag, col, False))
+        base_tag = col[: -len(raw_suffix)]
+        corrected_col = f"{base_tag}{corrected_suffix}"
+        if corrected_col not in df.columns:
+            corrected_col = None
+
+        flag_col = f"{base_tag}{flag_suffix}"
+        if flag_col not in df.columns:
+            flag_col = None
+
+        sources.append((base_tag, col, corrected_col, flag_col))
 
     return sources
 
@@ -204,15 +215,19 @@ def save_hourly_to_db(csv_path=None, cfg=None):
     # Get database connection
     db = get_db_connection(cfg)
 
-    # Ensure unique index exists so ON CONFLICT works
+    # Ensure unique indices exist so ON CONFLICT works
     ensure_unique_index(db)
+    ensure_corrections_index(db)
 
     consumption_sources = find_consumption_sources(df)
 
     if not consumption_sources:
         raise ValueError("No consumption columns found in CSV")
 
-    log_sources = [f"{base} (corrected={is_corr})" for base, _, is_corr in consumption_sources]
+    log_sources = [
+        f"{base} (has_corrected={corrected_col is not None})"
+        for base, _, corrected_col, _ in consumption_sources
+    ]
     logging.info(
         "Found %d consumption column(s): %s",
         len(consumption_sources),
@@ -220,16 +235,13 @@ def save_hourly_to_db(csv_path=None, cfg=None):
     )
 
     total_upserts = 0
+    total_corrections = 0
     insertion_time = datetime.now()
 
-    for base_tag, source_col, is_corrected in consumption_sources:
-        if is_corrected:
-            logging.info(
-                "Using corrected consumption column for %s (%s)", base_tag, source_col
-            )
-        else:
-            logging.info("Using raw consumption column for %s (%s)", base_tag, source_col)
-
+    for base_tag, source_col, corrected_col, flag_col in consumption_sources:
+        logging.info(
+            "Processing raw consumption column for %s (%s)", base_tag, source_col
+        )
         # Convert _TOT to _CSM
         csm_tag = convert_tag_name_to_csm(base_tag)
         logging.info(f"Processing tag: {base_tag} → {csm_tag}")
@@ -243,6 +255,7 @@ def save_hourly_to_db(csv_path=None, cfg=None):
 
         # Prepare data for insertion
         records_to_insert = []
+        correction_records = []
         for _, row in df.iterrows():
             timestamp_raw = row["timeStamp"]
             value = row[source_col]
@@ -251,12 +264,51 @@ def save_hourly_to_db(csv_path=None, cfg=None):
             if pd.isna(value):
                 continue
 
+            try:
+                local_ts = to_local_timestamp(timestamp_raw)
+            except ValueError as exc:
+                logging.warning(
+                    "Skipping timestamp %s for %s: %s", timestamp_raw, base_tag, exc
+                )
+                continue
+
+            raw_value = float(value)
+
             records_to_insert.append(
                 {
-                    "data": to_local_timestamp(timestamp_raw),
+                    "data": local_ts,
                     "data_insercio": insertion_time,
                     "idtag": int(idtag),
-                    "valor": float(value),
+                    "valor": raw_value,
+                }
+            )
+
+            if corrected_col and flag_col and flag_col in df.columns:
+                flag_value = row[flag_col]
+                has_corr = pd.notna(flag_value) and bool(flag_value)
+            else:
+                has_corr = False
+
+            if not corrected_col or not has_corr:
+                continue
+
+            corrected_value = row[corrected_col]
+            if pd.isna(corrected_value):
+                continue
+
+            corrected_value = float(corrected_value)
+            if math.isclose(corrected_value, raw_value, rel_tol=1e-9, abs_tol=1e-6):
+                continue
+
+            descrip = f"Script correction: {raw_value:.3f} → {corrected_value:.3f}"
+            correction_records.append(
+                {
+                    "data": local_ts,
+                    "data_insercio": insertion_time,
+                    "idtag": int(idtag),
+                    "valor": corrected_value,
+                    "tipus": 1,
+                    "descrip": descrip,
                 }
             )
 
@@ -266,8 +318,6 @@ def save_hourly_to_db(csv_path=None, cfg=None):
 
         # Execute batch upsert using SQLAlchemy
         try:
-            from sqlalchemy import text
-
             insert_sql = text(
                 """
                 INSERT INTO ga_datalake.ite_consums_data
@@ -286,12 +336,78 @@ def save_hourly_to_db(csv_path=None, cfg=None):
                 conn.commit()
 
             total_upserts += len(records_to_insert)
-            logging.info(
-                f"Upserted {len(records_to_insert)} records for {csm_tag}"
-            )
+            logging.info(f"Upserted {len(records_to_insert)} records for {csm_tag}")
         except Exception as e:
             logging.error(f"Failed to insert records for {csm_tag}: {e}")
             raise
 
+        # Delete existing corrections for this period/tag before inserting new ones
+        # This ensures old erroneous corrections don't persist
+        if records_to_insert:
+            try:
+                timestamps = [r["data"] for r in records_to_insert]
+                min_date = min(timestamps)
+                max_date = max(timestamps)
+
+                delete_sql = text(
+                    """
+                    DELETE FROM ga_datalake.ite_consums_datarect
+                    WHERE idtag = :idtag
+                      AND tipus = 1
+                      AND data >= :min_date
+                      AND data <= :max_date
+                    """
+                )
+
+                with db.connect() as conn:
+                    result = conn.execute(
+                        delete_sql,
+                        {"idtag": idtag, "min_date": min_date, "max_date": max_date},
+                    )
+                    deleted_count = result.rowcount
+                    conn.commit()
+
+                logging.info(
+                    f"Deleted {deleted_count} existing correction(s) for idtag={idtag} "
+                    f"between {min_date} and {max_date}"
+                )
+            except Exception as exc:
+                logging.error(
+                    "Failed to delete existing corrections for %s: %s", csm_tag, exc
+                )
+                raise
+
+        if correction_records:
+            logging.info(
+                "Inserting %d corrected records into ga_datalake.ite_consums_datarect",
+                len(correction_records),
+            )
+
+            correction_sql = text(
+                """
+                INSERT INTO ga_datalake.ite_consums_datarect
+                    (data, data_insercio, idtag, valor, tipus, descrip)
+                VALUES
+                    (:data, :data_insercio, :idtag, :valor, :tipus, :descrip)
+                ON CONFLICT (data, idtag, tipus)
+                DO UPDATE SET
+                    valor = EXCLUDED.valor,
+                    data_insercio = EXCLUDED.data_insercio,
+                    descrip = EXCLUDED.descrip
+                """
+            )
+
+            try:
+                with db.connect() as conn:
+                    conn.execute(correction_sql, correction_records)
+                    conn.commit()
+                total_corrections += len(correction_records)
+            except Exception as exc:
+                logging.error(
+                    "Failed to insert correction records for %s: %s", csm_tag, exc
+                )
+                raise
+
     logging.info(f"Total records upserted: {total_upserts}")
+    logging.info(f"Total corrections upserted: {total_corrections}")
     return total_upserts

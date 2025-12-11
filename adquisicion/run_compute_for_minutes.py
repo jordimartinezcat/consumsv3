@@ -1,3 +1,4 @@
+import glob
 import json
 import logging
 import os
@@ -11,10 +12,10 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-# Importar la API del submódulo
-from CAT_Conexions.src.conexions import apiSagedCAT
-from download_minute_data import download_minute_data
-from procesado.compute_consumption import append_minute_consumption, distribute_negative_compensations
+from procesado.compute_consumption import (
+    append_minute_consumption,
+    distribute_negative_compensations,
+)
 
 # Configuración de logging
 logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")
@@ -24,31 +25,126 @@ CONFIG_PATH = os.path.join(ROOT, "consums_config.json")
 with open(CONFIG_PATH, "r") as f:
     cfg = json.load(f)
 
-api_cfg = cfg.get("api", {})
-vista = api_cfg.get("vista")
-token = api_cfg.get("nexustoken")
-filter_prefix = None
-for task in cfg.get("tasks", []):
-    if task.get("name") == "fetch_api_data":
-        filter_prefix = task.get("filter")
-        break
+MINUTE_DATA_DIR = os.path.join(ROOT, "adquisicion", "minute_data")
+CACHED_SEP_FORMATS = [(";", ","), (",", "."), (",", ","), (";", ".")]
 
-headers = {"nexustoken": token, "Content-Type": "application/json"} if token else None
-api = apiSagedCAT(vista=vista, headers=headers)
 
-# Parámetros de consulta
-start = cfg.get("period", {}).get("start", "2025-01-01 00:00:00")
-end = cfg.get("period", {}).get("end", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-resolution = "RES_1_MIN"
+def load_existing_minutes():
+    """Return cached minute dataset if previously generated, else None."""
 
-logging.info(
-    f"Fetching minute totalizer data {start} -> {end} (filter: {filter_prefix})"
-)
-combined_df, missing = download_minute_data()
-if combined_df is None or combined_df.empty:
-    logging.error("No minute data downloaded or combined dataframe is empty")
-    sys.exit(1)
-df = combined_df.copy()
+    candidates = []
+    default_csv = os.path.join(MINUTE_DATA_DIR, "all_minutes.csv")
+    if os.path.exists(default_csv):
+        candidates.append(default_csv)
+
+    pattern = os.path.join(MINUTE_DATA_DIR, "all_minutes_*.csv")
+    for path in sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True):
+        if path not in candidates:
+            candidates.append(path)
+
+    def normalize_dataframe(raw_df):
+        df = raw_df.copy()
+
+        for noisy_col in ("Unnamed: 0", "index"):
+            if noisy_col in df.columns:
+                df = df.drop(columns=noisy_col)
+
+        ts_col = None
+        for cand in ("timeStamp", "timestamp", "data"):
+            if cand in df.columns:
+                ts_col = cand
+                break
+
+        if ts_col is not None:
+            ts_index = pd.to_datetime(df[ts_col], errors="coerce")
+            df = df.drop(columns=ts_col)
+        else:
+            ts_index = pd.to_datetime(df.index, errors="coerce")
+
+        if ts_index.isna().all():
+            return None
+
+        df.index = ts_index
+        if df.empty or len(df.columns) < 2:
+            return None
+
+        # Reject datasets where the delimiter wasn't applied (columns still contain commas)
+        if any(
+            isinstance(col, str)
+            and "," in col
+            and col not in {"timeStamp", "timestamp", "data"}
+            for col in df.columns
+        ):
+            return None
+
+        value_columns = [
+            c
+            for c in df.columns
+            if any(
+                c.endswith(suffix)
+                for suffix in (
+                    "_TOT",
+                    "_TOT_H",
+                    "_TOT_L",
+                    "_rect_0",
+                    "_cons",
+                )
+            )
+        ]
+        if not value_columns:
+            return None
+
+        return df
+
+    for candidate in candidates:
+        for sep, decimal in CACHED_SEP_FORMATS:
+            try:
+                raw_df = pd.read_csv(candidate, sep=sep, decimal=decimal)
+            except Exception:
+                continue
+
+            df = normalize_dataframe(raw_df)
+            if df is None:
+                continue
+
+            logging.info(
+                "Loaded cached minute dataset from %s using sep='%s' decimal='%s'",
+                candidate,
+                sep,
+                decimal,
+            )
+            return df
+
+    return None
+
+
+existing_minutes = load_existing_minutes()
+if existing_minutes is not None:
+    logging.info("Using cached minute dataset; skipping API download")
+    df = existing_minutes.copy()
+else:
+    logging.info("No cached dataset found, importing download module...")
+    from download_minute_data import download_minute_data
+
+    # Read API config only when needed
+    api_cfg = cfg.get("api", {})
+    filter_prefix = None
+    for task in cfg.get("tasks", []):
+        if task.get("name") == "fetch_api_data":
+            filter_prefix = task.get("filter")
+            break
+
+    start = cfg.get("period", {}).get("start", "2025-01-01 00:00:00")
+    end = cfg.get("period", {}).get("end", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    logging.info(
+        f"Fetching minute totalizer data {start} -> {end} (filter: {filter_prefix})"
+    )
+    combined_df, missing = download_minute_data()
+    if combined_df is None or combined_df.empty:
+        logging.error("No minute data downloaded or combined dataframe is empty")
+        sys.exit(1)
+    df = combined_df.copy()
 
 # Asegurar índice datetime
 if not isinstance(df.index, pd.DatetimeIndex):
@@ -57,8 +153,23 @@ if not isinstance(df.index, pd.DatetimeIndex):
             df.index = pd.to_datetime(df[cand], errors="coerce")
             break
 
-print("\nMinute totalizer data:")
+print("\nMinute totalizer data (before forward-fill):")
 print(df.head())
+
+# Forward-fill NaN values in TOT_H and TOT_L columns
+tot_h_cols = [c for c in df.columns if c.endswith("_TOT_H")]
+tot_l_cols = [c for c in df.columns if c.endswith("_TOT_L")]
+
+for col in tot_h_cols + tot_l_cols:
+    original_nans = df[col].isna().sum()
+    if original_nans > 0:
+        df[col] = df[col].ffill()
+        filled_nans = original_nans - df[col].isna().sum()
+        logging.info(f"Forward-filled {filled_nans} NaN values in {col}")
+
+print("\nMinute totalizer data (after forward-fill):")
+print(df.head())
+
 
 # Aquí puedes continuar con el procesamiento, por ejemplo, combinar 16/32 bits o calcular consumos
 # Combinar pares TOT_H / TOT_L en una sola columna TOT
@@ -69,18 +180,19 @@ def combine_tot_high_low(df):
     for col in cols:
         if col in processed:
             continue
-        if col.endswith('_TOT_H'):
+        if col.endswith("_TOT_H"):
             base = col[:-6]  # remove _TOT_H
-            low_col = base + '_TOT_L'
-            tot_col = base + '_TOT'
+            low_col = base + "_TOT_L"
+            tot_col = base + "_TOT"
             if low_col in combined.columns:
                 # Combine high and low 16-bit parts into 32-bit unsigned int
                 import numpy as np
-                high_s = pd.to_numeric(combined[col], errors='coerce').fillna(0)
-                low_s = pd.to_numeric(combined[low_col], errors='coerce').fillna(0)
+
+                high_s = pd.to_numeric(combined[col], errors="coerce").fillna(0)
+                low_s = pd.to_numeric(combined[low_col], errors="coerce").fillna(0)
                 # Convert to numpy int64 arrays for bit ops
-                high_arr = high_s.to_numpy(dtype='int64')
-                low_arr = low_s.to_numpy(dtype='int64')
+                high_arr = high_s.to_numpy(dtype="int64")
+                low_arr = low_s.to_numpy(dtype="int64")
                 # Mask low to 16 bits and shift high
                 result_arr = (high_arr << 16) | (low_arr & 0xFFFF)
                 combined[tot_col] = pd.Series(result_arr, index=combined.index)
@@ -96,19 +208,22 @@ def combine_tot_high_low(df):
 
 df = combine_tot_high_low(df)
 
+
 # Regla de calidad: rect_0 -> si el TOT calculado es 0, reemplazar por último valor válido (>0)
 def apply_rect_0(df):
     # Remove any previous rect columns to avoid duplicates
-    existing_rect_cols = [c for c in df.columns if c.endswith('_rect_0') or c == 'rect_0']
+    existing_rect_cols = [
+        c for c in df.columns if c.endswith("_rect_0") or c == "rect_0"
+    ]
     rected = df.copy()
     if existing_rect_cols:
         rected = rected.drop(columns=existing_rect_cols)
 
-    tot_cols = [c for c in rected.columns if c.endswith('_TOT')]
+    tot_cols = [c for c in rected.columns if c.endswith("_TOT")]
 
     for col in tot_cols:
         rect_col = f"{col}_rect_0"
-        s = pd.to_numeric(rected[col], errors='coerce')
+        s = pd.to_numeric(rected[col], errors="coerce")
 
         # previous and next values
         prev = s.shift(1)
@@ -123,7 +238,7 @@ def apply_rect_0(df):
         # Mask invalid points to NaN then forward-fill using last valid
         s_masked = s.where(~invalid)
         s_filled = s_masked.ffill()
-        s_filled = s_filled.fillna(0).astype('int64')
+        s_filled = s_filled.fillna(0).astype("int64")
         rected[rect_col] = s_filled
 
     return rected
@@ -134,18 +249,19 @@ df = apply_rect_0(df)
 # Calculate minute consumptions and append them
 try:
     df = append_minute_consumption(df)
-    logging.info('Appended per-minute consumption columns')
+    logging.info("Appended per-minute consumption columns")
 except Exception as e:
-    logging.warning('Could not compute/append consumption columns: %s', e)
+    logging.warning("Could not compute/append consumption columns: %s", e)
 
 # Apply anomaly distribution rule and attach anomaly columns
 try:
     # compute anomalies per total column explicitly here to ensure values are filled
-    tot_candidates = [c for c in df.columns if c.endswith('_rect_0')]
+    tot_candidates = [c for c in df.columns if c.endswith("_rect_0")]
     if not tot_candidates:
-        tot_candidates = [c for c in df.columns if c.endswith('_TOT')]
+        tot_candidates = [c for c in df.columns if c.endswith("_TOT")]
 
     import numpy as _np
+
     for total_col in tot_candidates:
         cons_col = f"{total_col}_cons"
         anom_col = f"{total_col}_anom"
@@ -154,13 +270,21 @@ try:
             continue
 
         # prefer raw TOT to detect zero runs
-        raw_col = total_col.replace('_rect_0', '_TOT') if total_col.endswith('_rect_0') else total_col
+        raw_col = (
+            total_col.replace("_rect_0", "_TOT")
+            if total_col.endswith("_rect_0")
+            else total_col
+        )
         if raw_col in df.columns:
-            totals_raw = pd.to_numeric(df[raw_col], errors='coerce').fillna(_np.nan).to_numpy()
+            totals_raw = (
+                pd.to_numeric(df[raw_col], errors="coerce").fillna(_np.nan).to_numpy()
+            )
         else:
-            totals_raw = pd.to_numeric(df[total_col], errors='coerce').fillna(_np.nan).to_numpy()
+            totals_raw = (
+                pd.to_numeric(df[total_col], errors="coerce").fillna(_np.nan).to_numpy()
+            )
 
-        cons = pd.to_numeric(df[cons_col], errors='coerce').fillna(0).to_numpy()
+        cons = pd.to_numeric(df[cons_col], errors="coerce").fillna(0).to_numpy()
         n = len(df)
         anom = _np.zeros(n, dtype=float)
         i = 0
@@ -179,39 +303,62 @@ try:
                     start = j + 1
                     end = i
                     count = end - start + 1
-                    logging.info('  i=%d cur=%s nxt=%s net=%s j=%d start=%d end=%d count=%d', i, cur, nxt, net, j, start, end, count)
+                    logging.info(
+                        "  i=%d cur=%s nxt=%s net=%s j=%d start=%d end=%d count=%d",
+                        i,
+                        cur,
+                        nxt,
+                        net,
+                        j,
+                        start,
+                        end,
+                        count,
+                    )
                     if count > 0:
                         per = net / count
-                        anom[start:end + 1] += per
+                        anom[start : end + 1] += per
                         applied += 1
                 i += 2
             else:
                 i += 1
-        logging.info('%s: found %d neg+pos patterns, applied %d distributions', total_col, matches, applied)
+        logging.info(
+            "%s: found %d neg+pos patterns, applied %d distributions",
+            total_col,
+            matches,
+            applied,
+        )
 
         # replace zeros with NaN
-        anom_series = pd.Series(anom, index=df.index, dtype='float64').replace(0.0, _np.nan)
+        anom_series = pd.Series(anom, index=df.index, dtype="float64").replace(
+            0.0, _np.nan
+        )
         df[anom_col] = anom_series
-    logging.info('Applied anomaly distribution to totalized columns (inline)')
+    logging.info("Applied anomaly distribution to totalized columns (inline)")
 except Exception as e:
-    logging.warning('Could not apply anomaly distribution: %s', e)
+    logging.warning("Could not apply anomaly distribution: %s", e)
 else:
     # log counts of anomaly values for debugging
     try:
         for c in anom_df.columns:
             cnt = df[c].notna().sum()
-            logging.info('Anomaly column %s non-null count: %d', c, cnt)
+            logging.info("Anomaly column %s non-null count: %d", c, cnt)
     except Exception:
         pass
 
 # Guardar CSV con separador ';' y decimales ',' si está habilitado en config
-save_task = next((t for t in cfg.get('tasks', []) if t.get('name') == 'save_to_csv'), None)
-if save_task and save_task.get('enabled'):
-    out_dir = save_task.get('output_dir') or os.path.join(ROOT, 'adquisicion', 'minute_data')
+save_task = next(
+    (t for t in cfg.get("tasks", []) if t.get("name") == "save_to_csv"), None
+)
+if save_task and save_task.get("enabled"):
+    out_dir = save_task.get("output_dir") or os.path.join(
+        ROOT, "adquisicion", "minute_data"
+    )
     os.makedirs(out_dir, exist_ok=True)
-    filename = save_task.get('filename') or f"all_minutes_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    filename = (
+        save_task.get("filename")
+        or f"all_minutes_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    )
     out_path = os.path.join(out_dir, filename)
     # Pandas accepts decimal=',' and sep=';'
-    df.to_csv(out_path, sep=';', decimal=',', index=True)
-    logging.info('Saved combined dataset to %s', out_path)
-    
+    df.to_csv(out_path, sep=";", decimal=",", index=True)
+    logging.info("Saved combined dataset to %s", out_path)

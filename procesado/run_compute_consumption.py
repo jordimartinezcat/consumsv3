@@ -41,27 +41,29 @@ def main():
     print(f"Loading combined CSV: {src}")
     # Try to detect CSV format first
     try:
-        df = pd.read_csv(src, sep=";", decimal=",")
+        df = pd.read_csv(src, sep=";", decimal=",", index_col=0, parse_dates=True)
         print('Loaded CSV with European format (sep=";", decimal=",")')
     except Exception as e:
         print(f"European format failed: {e}, trying auto-detection...")
-        df = pd.read_csv(src, sep=None, engine="python")
+        df = pd.read_csv(src, sep=None, engine="python", index_col=0, parse_dates=True)
         print("Loaded CSV with auto-detected format")
-
-    # try to parse index if there is a timestamp column
-    if "timestamp" in df.columns:
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
-        df = df.set_index("timestamp")
-    elif df.index.name in ("timestamp", "timeStamp"):
-        df.index = pd.to_datetime(df.index)
 
     print(f"Loaded DataFrame with columns: {list(df.columns)}")
 
-    # Step 1: Calculate consumption
-    result = append_minute_consumption(df)
+    # Check if consumption columns already exist (processed by run_compute_for_minutes.py)
+    cons_cols = [c for c in df.columns if c.endswith("_cons")]
+    anom_cols = [c for c in df.columns if c.endswith("_anom")]
+
+    if cons_cols:
+        print(
+            f"Found existing consumption columns: {cons_cols}, skipping recalculation"
+        )
+        result = df.copy()
+    else:
+        print("Calculating consumption columns...")
+        result = append_minute_consumption(df)
 
     # Step 2: Detect regular anomalies (negative compensations)
-    anom_cols = [c for c in result.columns if c.endswith("_anom")]
     if anom_cols:
         has_values = any(result[col].notna().sum() > 0 for col in anom_cols)
         if has_values:
@@ -72,6 +74,7 @@ def main():
     else:
         print("Generating anomaly columns...")
         result = attach_anomalies_to_df(result)
+        anom_cols = [c for c in result.columns if c.endswith("_anom")]
 
     # Step 3: Detect and mark counter resets (runs before phantom jump handling)
     print("\n--- Detecting counter resets ---")

@@ -35,21 +35,20 @@
         {
             "name": "fetch_api_data",
             "enabled": true,
-            "filter":"VVD05"
-        },
-        {
-            "name": "push_to_pg_datalake",
-            "enabled": true
+            "filter":"LTD09"
         },
         {
             "name": "save_to_csv",
             "enabled": true,
             "output_dir":"",
             "filename":""
-        }
-        ,
+        },
         {
             "name": "compute_consumption",
+            "enabled": true
+        },
+        {
+            "name": "push_to_pg_datalake",
             "enabled": true
         }
     ]
