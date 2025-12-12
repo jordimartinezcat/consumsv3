@@ -249,9 +249,11 @@ def save_hourly_to_db(csv_path=None, cfg=None):
     error_signals = []
 
     for base_tag, source_col, corrected_col, flag_col in consumption_sources:
-        logging.info(
-            "Processing raw consumption column for %s (%s)", base_tag, source_col
-        )
+        # Determinar qué columna usar como fuente de datos
+        # SIEMPRE preferir corrected_col si existe
+        data_col = corrected_col if corrected_col else source_col
+
+        logging.info("Processing consumption column for %s (%s)", base_tag, data_col)
 
         try:
             # Convert _TOT to _CSM
@@ -270,10 +272,13 @@ def save_hourly_to_db(csv_path=None, cfg=None):
             records_to_insert = []
             correction_records = []
             negative_consumption_count = 0
-            
+            last_negative_correction = (
+                None  # Track negative corrections for next hour compensation
+            )
+
             for _, row in df.iterrows():
                 timestamp_raw = row["timeStamp"]
-                value = row[source_col]
+                value = row[data_col]  # Usar data_col (corrected si existe, sino raw)
 
                 # Skip NaN values
                 if pd.isna(value):
@@ -288,15 +293,46 @@ def save_hourly_to_db(csv_path=None, cfg=None):
                     continue
 
                 raw_value = float(value)
-                
-                # Detectar consumos negativos anómalos y crear rectificación
+
+                # Si estamos usando la columna corrected, también obtener el raw para registrar corrección
+                raw_from_source = None
+                if data_col == corrected_col and source_col in df.columns:
+                    raw_from_source = row[source_col]
+                    if pd.notna(raw_from_source):
+                        raw_from_source = float(raw_from_source)
+                        # Si son diferentes, registrar la corrección
+                        if not math.isclose(
+                            raw_value, raw_from_source, rel_tol=1e-9, abs_tol=1e-6
+                        ):
+                            descrip = f"Reset correction: {raw_from_source:.3f} -> {raw_value:.3f}"
+                            correction_records.append(
+                                {
+                                    "data": local_ts,
+                                    "data_insercio": insertion_time,
+                                    "idtag": int(idtag),
+                                    "valor": raw_value,
+                                    "tipus": 1,
+                                    "descrip": descrip,
+                                }
+                            )
+
+                # Detectar consumos negativos anómalos (safety net)
                 if raw_value < 0:
                     negative_consumption_count += 1
+                    negative_amount = abs(raw_value)
                     logging.warning(
                         f"⚠️  Consumo negativo detectado en {csm_tag} a las {local_ts}: {raw_value:.2f} L"
                     )
-                    logging.warning(f"   → Corrigiendo a 0.0 y guardando como rectificación")
-                    
+                    logging.warning(
+                        f"   → Corrigiendo a 0.0 y guardando como rectificación"
+                    )
+
+                    # Guardar para compensar la siguiente hora
+                    last_negative_correction = {
+                        "timestamp": local_ts,
+                        "amount": negative_amount,
+                    }
+
                     # Crear rectificación automática
                     descrip = f"Negative consumption correction: {raw_value:.3f} → 0.0 (automatic)"
                     correction_records.append(
@@ -312,6 +348,45 @@ def save_hourly_to_db(csv_path=None, cfg=None):
                     # Guardar 0 en lugar del valor negativo
                     raw_value = 0.0
 
+                # Detectar si esta hora compensa una corrección negativa de la hora anterior
+                elif last_negative_correction is not None:
+                    prev_ts = last_negative_correction["timestamp"]
+                    prev_amount = last_negative_correction["amount"]
+
+                    # Verificar si es la hora siguiente y si el valor es anormalmente alto
+                    time_diff = (local_ts - prev_ts).total_seconds() / 3600
+                    if 0.5 < time_diff < 1.5 and raw_value > 1000000:
+                        # Es probable que sea la compensación del reset
+                        # Calcular el consumo real restando la cantidad negativa corregida
+                        corrected_value = raw_value - prev_amount
+
+                        logging.warning(
+                            f"⚠️  Compensación de reset detectada en {csm_tag} a las {local_ts}"
+                        )
+                        logging.warning(f"   Valor original: {raw_value:.2f} L")
+                        logging.warning(
+                            f"   Compensación negativa previa: -{prev_amount:.2f} L"
+                        )
+                        logging.warning(
+                            f"   → Valor corregido: {corrected_value:.2f} L"
+                        )
+
+                        # Crear rectificación para esta hora
+                        descrip = f"Reset compensation: {raw_value:.3f} → {corrected_value:.3f} (compensating negative from previous hour)"
+                        correction_records.append(
+                            {
+                                "data": local_ts,
+                                "data_insercio": insertion_time,
+                                "idtag": int(idtag),
+                                "valor": corrected_value,
+                                "tipus": 1,
+                                "descrip": descrip,
+                            }
+                        )
+
+                        raw_value = corrected_value
+                        last_negative_correction = None  # Reset tracking
+
                 records_to_insert.append(
                     {
                         "data": local_ts,
@@ -321,39 +396,10 @@ def save_hourly_to_db(csv_path=None, cfg=None):
                     }
                 )
 
-                if corrected_col and flag_col and flag_col in df.columns:
-                    flag_value = row[flag_col]
-                    has_corr = pd.notna(flag_value) and bool(flag_value)
-                else:
-                    has_corr = False
-
-                if not corrected_col or not has_corr:
-                    continue
-
-                corrected_value = row[corrected_col]
-                if pd.isna(corrected_value):
-                    continue
-
-                corrected_value = float(corrected_value)
-                if math.isclose(corrected_value, raw_value, rel_tol=1e-9, abs_tol=1e-6):
-                    continue
-
-                descrip = f"Script correction: {raw_value:.3f} → {corrected_value:.3f}"
-                correction_records.append(
-                    {
-                        "data": local_ts,
-                        "data_insercio": insertion_time,
-                        "idtag": int(idtag),
-                        "valor": corrected_value,
-                        "tipus": 1,
-                        "descrip": descrip,
-                    }
-                )
-
             logging.info(
                 f"Inserting {len(records_to_insert)} records for tag {csm_tag} (idtag={idtag})"
             )
-            
+
             if negative_consumption_count > 0:
                 logging.warning(
                     f"⚠️  Detectados {negative_consumption_count} consumos negativos en {csm_tag} → Corregidos a 0"

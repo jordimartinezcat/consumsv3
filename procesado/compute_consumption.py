@@ -2,9 +2,11 @@ import numpy as np
 import pandas as pd
 
 
-def detect_counter_resets(df: pd.DataFrame, total_columns=None, near_zero_threshold=1000) -> pd.DataFrame:
+def detect_counter_resets(
+    df: pd.DataFrame, total_columns=None, near_zero_threshold=1000
+) -> pd.DataFrame:
     """Detect counter resets in totalizer columns and mark corrections in anomaly columns.
-    
+
     Solo trata como reset si el totalizador después del salto está cerca de 0.
     Si no está cerca de 0, es un salto anómalo y NO se corrige.
 
@@ -23,7 +25,7 @@ def detect_counter_resets(df: pd.DataFrame, total_columns=None, near_zero_thresh
         Copy of df with reset corrections marked in anomaly columns
     """
     import logging
-    
+
     if total_columns is None:
         # Prefer rectified totals if available, otherwise use raw *_TOT
         rect_cols = [c for c in df.columns if c.endswith("_rect_0")]
@@ -51,11 +53,11 @@ def detect_counter_resets(df: pd.DataFrame, total_columns=None, near_zero_thresh
 
             anom_col = f"{col}_anom"
             anomalous_jump_col = col + "_is_anomalous_jump"
-            
+
             if anom_col in result.columns:
                 real_resets = 0
                 anomalous_jumps = 0
-                
+
                 for reset_idx in reset_indices:
                     # Get position in array
                     reset_pos = totals.index.get_loc(reset_idx)
@@ -63,14 +65,39 @@ def detect_counter_resets(df: pd.DataFrame, total_columns=None, near_zero_thresh
                         prev_value = totals.iloc[reset_pos]
                         curr_value = totals.iloc[reset_pos + 1]
 
-                        # Validar si es reset REAL (totalizador después cerca de 0)
-                        is_real_reset = abs(curr_value) <= near_zero_threshold
-                        
+                        # Validar si es reset REAL verificando:
+                        # 1. Totalizador después del salto cerca de 0
+                        # 2. Se mantiene bajo (no vuelve rápidamente al valor alto)
+                        is_near_zero = abs(curr_value) <= near_zero_threshold
+
+                        # Verificar que se mantiene bajo en los próximos minutos
+                        is_stable_reset = False
+                        if is_near_zero:
+                            # Mirar los próximos 30 minutos (ventana amplia para detectar oscilaciones)
+                            check_window = min(30, len(totals) - reset_pos - 2)
+                            if (
+                                check_window >= 5
+                            ):  # Necesitamos al menos 5 minutos para validar
+                                next_values = totals.iloc[
+                                    reset_pos + 2 : reset_pos + 2 + check_window
+                                ]
+                                # Es reset estable si NO vuelve a subir significativamente
+                                # Permitimos incrementos graduales pequeños pero no saltos grandes
+                                max_next = next_values.max()
+                                # Umbral más estricto: no debe superar 10% del valor previo
+                                is_stable_reset = max_next < (prev_value * 0.1)
+                            else:
+                                # No hay suficientes datos después, NO asumir que es estable
+                                is_stable_reset = False
+
+                        is_real_reset = is_near_zero and is_stable_reset
+
                         if is_real_reset:
                             # Es un RESET REAL
                             print(
-                                f"  ✓ Reset REAL detectado en {reset_idx} (pos {reset_pos}): {prev_value} → {curr_value}"
+                                f"  Reset REAL detectado en {reset_idx} (pos {reset_pos}): {prev_value} -> {curr_value}"
                             )
+                            print(f"    Totalizador se mantiene bajo despues del reset")
 
                             # Estimate counter maximum (usually power of 10: 10^7, 10^8, 10^9)
                             counter_max = determine_counter_max(prev_value)
@@ -87,25 +114,40 @@ def detect_counter_resets(df: pd.DataFrame, total_columns=None, near_zero_thresh
                             print(f"    Marked correction in {anom_col} at {reset_idx}")
                             real_resets += 1
                         else:
-                            # Es un SALTO ANÓMALO - NO corregir
-                            # Verificar si ya está marcado desde combine_tot_high_low
-                            if anomalous_jump_col in result.columns:
-                                is_marked = result.loc[result.index[reset_pos + 1], anomalous_jump_col]
-                                if is_marked:
-                                    print(
-                                        f"  ⚠️  Salto anómalo YA MARCADO en {reset_idx}: {prev_value} → {curr_value} (no es reset)"
-                                    )
-                                else:
-                                    logging.warning(
-                                        f"Salto anómalo NO marcado previamente en {reset_idx}: {prev_value} → {curr_value}"
-                                    )
-                            else:
+                            # Es un SALTO ANOMALO o OSCILACION ERRATICA - NO corregir
+                            if is_near_zero and not is_stable_reset:
                                 print(
-                                    f"  ⚠️  Salto anómalo detectado en {reset_idx}: {prev_value} → {curr_value} (no es reset, NO se corrige)"
+                                    f"  OSCILACION ERRATICA detectada en {reset_idx}: {prev_value} → {curr_value}"
                                 )
+                                print(
+                                    f"    Totalizador vuelve a subir rapidamente, NO es reset real"
+                                )
+                                print(
+                                    f"    -> Consumo se mantiene como calculado (negativo), sera corregido a 0 en persistencia"
+                                )
+                            else:
+                                # Es un SALTO ANOMALO normal - Verificar si ya esta marcado desde combine_tot_high_low
+                                if anomalous_jump_col in result.columns:
+                                    is_marked = result.loc[
+                                        result.index[reset_pos + 1], anomalous_jump_col
+                                    ]
+                                    if is_marked:
+                                        print(
+                                            f"  Salto anomalo YA MARCADO en {reset_idx}: {prev_value} -> {curr_value} (no es reset)"
+                                        )
+                                    else:
+                                        logging.warning(
+                                            f"Salto anomalo NO marcado previamente en {reset_idx}: {prev_value} -> {curr_value}"
+                                        )
+                                else:
+                                    print(
+                                        f"  Salto anomalo detectado en {reset_idx}: {prev_value} -> {curr_value} (no es reset, NO se corrige)"
+                                    )
                             anomalous_jumps += 1
-                
-                print(f"  Resumen: {real_resets} resets reales, {anomalous_jumps} saltos anómalos (no corregidos)")
+
+                print(
+                    f"  Resumen: {real_resets} resets reales, {anomalous_jumps} saltos anomalos (no corregidos)"
+                )
 
     return result
 
@@ -160,11 +202,11 @@ def append_minute_consumption(df: pd.DataFrame, total_columns=None) -> pd.DataFr
 
     Keeps original columns and appends `<col>_cons` for each total column.
     Returns the dataframe ready for reset detection (without applying it yet).
-    
+
     Si existe columna *_is_anomalous_jump, corrige el consumo a 0 en esos puntos.
     """
     import logging
-    
+
     # Compute normal consumption
     cons = compute_minute_consumption(df, total_columns=total_columns)
 
@@ -172,31 +214,31 @@ def append_minute_consumption(df: pd.DataFrame, total_columns=None) -> pd.DataFr
     result = df.copy()
     for c in cons.columns:
         result[c] = cons[c]
-    
-    # Aplicar correcciones de saltos anómalos si existen
+
+    # Aplicar correcciones de saltos anomalos si existen
     if total_columns is None:
         rect_cols = [c for c in df.columns if c.endswith("_rect_0")]
         if rect_cols:
             total_columns = rect_cols
         else:
             total_columns = [c for c in df.columns if c.endswith("_TOT")]
-    
+
     for col in total_columns:
         cons_col = f"{col}_cons"
         anomaly_col = col + "_is_anomalous_jump"
-        
+
         if anomaly_col in result.columns and cons_col in result.columns:
-            # Corregir consumo a 0 donde hay saltos anómalos
+            # Corregir consumo a 0 donde hay saltos anomalos
             anomaly_mask = result[anomaly_col] == True
             num_anomalies = anomaly_mask.sum()
-            
+
             if num_anomalies > 0:
                 consumption_original = result[cons_col].copy()
                 result.loc[anomaly_mask, cons_col] = 0.0
-                
+
                 total_eliminated = consumption_original.loc[anomaly_mask].sum()
                 logging.info(
-                    f"{col}: Corregidos {num_anomalies} saltos anómalos en consumo, "
+                    f"{col}: Corregidos {num_anomalies} saltos anomalos en consumo, "
                     f"eliminado: {total_eliminated:,.0f}"
                 )
 
@@ -277,16 +319,18 @@ def distribute_negative_compensations(
     return anom_df
 
 
-def detect_phantom_totalizer_jumps(df: pd.DataFrame, total_columns=None, threshold=1000000) -> pd.DataFrame:
+def detect_phantom_totalizer_jumps(
+    df: pd.DataFrame, total_columns=None, threshold=1000000
+) -> pd.DataFrame:
     """Detect and mark phantom jumps in totalizer as anomalies (consumption = 0).
-    
+
     Phantom jumps are large changes in the totalizer that don't represent real consumption:
     - Large change in totalizer (> threshold, default 1 million)
     - Consumption calculated is anomalously high
     - Often the totalizer returns to a similar value shortly after
-    
+
     These are marked with consumption = 0 in the anomaly column.
-    
+
     Parameters:
     -----------
     df : pd.DataFrame
@@ -295,7 +339,7 @@ def detect_phantom_totalizer_jumps(df: pd.DataFrame, total_columns=None, thresho
         Columns to check for phantom jumps
     threshold : int, default=1000000
         Minimum consumption value to consider as potential phantom jump (1 million)
-        
+
     Returns:
     --------
     pd.DataFrame
@@ -307,36 +351,36 @@ def detect_phantom_totalizer_jumps(df: pd.DataFrame, total_columns=None, thresho
             total_columns = rect_cols
         else:
             total_columns = [c for c in df.columns if c.endswith("_TOT")]
-    
+
     result = df.copy()
-    
+
     for total_col in total_columns:
         cons_col = f"{total_col}_cons"
         anom_col = f"{total_col}_anom"
-        
+
         if cons_col not in df.columns:
             continue
-            
+
         print(f"Checking for phantom jumps in {total_col}...")
-        
+
         # Find consumptions above threshold
         high_cons_mask = df[cons_col] > threshold
         high_cons_indices = df[high_cons_mask].index
-        
+
         phantom_count = 0
-        
+
         for idx in high_cons_indices:
             pos = df.index.get_loc(idx)
-            
+
             # Need at least 10 minutes before and after for reliable detection
             if pos < 10 or pos >= len(df) - 10:
                 continue
-            
+
             # Get totalizer values in window
-            tot_before = df[total_col].iloc[pos - 10:pos].values
+            tot_before = df[total_col].iloc[pos - 10 : pos].values
             tot_current = df[total_col].iloc[pos]
-            tot_after = df[total_col].iloc[pos + 1:pos + 11].values
-            
+            tot_after = df[total_col].iloc[pos + 1 : pos + 11].values
+
             # Check if totalizer was stable before (all same value or very close)
             if len(tot_before) > 0 and len(tot_after) > 0:
                 # Check stability: all values within 10 units
@@ -359,16 +403,14 @@ def detect_phantom_totalizer_jumps(df: pd.DataFrame, total_columns=None, thresho
 
                         result.loc[idx, anom_col] = 0.0
                         phantom_count += 1
-                        reason = (
-                            "revert" if reverts_to_previous else "flat-after jump"
-                        )
+                        reason = "revert" if reverts_to_previous else "flat-after jump"
                         print(
                             f"  Phantom jump detected ({reason}) at {idx}: {df[cons_col].loc[idx]:.0f} → 0"
                         )
-        
+
         if phantom_count > 0:
             print(f"  Total phantom jumps corrected: {phantom_count}")
-    
+
     return result
 
 
@@ -419,6 +461,14 @@ def attach_anomalies_to_df(df: pd.DataFrame, total_columns=None) -> pd.DataFrame
             cur = cons[i]
             nxt = cons[i + 1]
             if cur < 0 and nxt > 0:
+                # NO corregir si los valores son extremadamente grandes (overflow/errores de sensor)
+                # Umbral: valores > 1 millón de litros por minuto son imposibles
+                if abs(cur) > 1000000 or abs(nxt) > 1000000:
+                    # Salto anomalo extremo, probablemente overflow de entero
+                    # No intentar corregir, será tratado como consumo negativo en persistencia
+                    i += 2
+                    continue
+
                 net = cur + nxt
                 if net > 0:
                     # Buscar hacia atrás los minutos consecutivos donde totals_raw == 0
