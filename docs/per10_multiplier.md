@@ -33,12 +33,14 @@ Currently, 18 tags have this flag enabled:
 ### 2. Implementation Flow
 
 ```
-1. Load combined CSV data → run_compute_consumption.py
-2. Query per10 flag for each TOT column → get_tag_per10()
-3. Multiply totalizer values by 10 if per10=True → apply_per10_multiplier()
-4. Calculate consumption (automatic, uses multiplied values)
-5. Detect anomalies/resets (automatic, uses multiplied values)
-6. Persist to database (automatic, uses corrected consumption)
+1. Load individual signal CSVs → run_compute_for_minutes.py
+2. Combine H/L into 32-bit totalizers → combine_tot_high_low()
+3. Query per10 flag for each TOT column → get_tag_per10()
+4. Multiply totalizer values by 10 if per10=True → apply_per10_multiplier()
+5. Apply data quality rules → apply_rect_0()
+6. Calculate consumption (automatic, uses multiplied values) → append_minute_consumption()
+7. Detect anomalies/resets (automatic, uses multiplied values)
+8. Persist to database (automatic, uses corrected consumption)
 ```
 
 ### 3. Key Design Decision
@@ -67,23 +69,26 @@ def get_tag_per10(engine, tag_name):
     # Queries: SELECT per10 FROM ga_landing.cfg_tags WHERE tag = :tag_name
 ```
 
-#### `procesado/run_compute_consumption.py`
+#### `adquisicion/run_compute_for_minutes.py`
 ```python
 def apply_per10_multiplier(df):
     """Apply x10 multiplier to totalizer columns for tags with per10=True."""
     # 1. Get engine
-    # 2. Find all _TOT, _TOT_H, _TOT_L columns
+    # 2. Find all _TOT columns (after combine_tot_high_low)
     # 3. Query per10 for each tag
     # 4. Multiply by 10 if per10=True
     # 5. Return modified DataFrame
 ```
 
-Called right after loading CSV, before any processing:
+Called right after combining H/L into 32-bit totals, before any other processing:
 ```python
-df = pd.read_csv(src, ...)
-df = apply_per10_multiplier(df)  # ← Applied here
-result = append_minute_consumption(df)
+df = combine_tot_high_low(df)      # Combine 16-bit H/L → 32-bit TOT
+df = apply_per10_multiplier(df)    # ← Applied here (NEW LOCATION)
+df = apply_rect_0(df)              # Data quality rules
+df = append_minute_consumption(df) # Calculate consumption
 ```
+
+**Note:** Previously this was in `procesado/run_compute_consumption.py`, but it has been moved to `adquisicion/run_compute_for_minutes.py` to ensure the multiplier is applied before consumption calculation, not after.
 
 ## Testing
 

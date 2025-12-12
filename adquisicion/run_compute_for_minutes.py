@@ -12,10 +12,13 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+sys.path.insert(0, os.path.join(ROOT, "persistencia"))
+
 from procesado.compute_consumption import (
     append_minute_consumption,
     distribute_negative_compensations,
 )
+from persistencia.db_connection import get_db_connection, get_tag_per10
 
 # Configuración de logging
 logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")
@@ -173,16 +176,18 @@ print(df.head())
 
 # Aquí puedes continuar con el procesamiento, por ejemplo, combinar 16/32 bits o calcular consumos
 # Combinar pares TOT_H / TOT_L en una sola columna TOT
-def combine_tot_high_low(df, near_zero_threshold=1000, max_reasonable_consumption=100000):
+def combine_tot_high_low(
+    df, near_zero_threshold=1000, max_reasonable_consumption=100000
+):
     """
     Combina TOT_H y TOT_L en totalizador de 32 bits con detección de saltos anómalos.
-    
+
     Un reset real debe cumplir:
     - Consumo muy negativo
     - Valor del totalizador después del salto cercano a 0
-    
+
     Si no cumple, es un salto anómalo y se marca para corrección (consumo = 0).
-    
+
     Parameters:
     -----------
     df : pd.DataFrame
@@ -195,7 +200,7 @@ def combine_tot_high_low(df, near_zero_threshold=1000, max_reasonable_consumptio
     cols = list(df.columns)
     combined = df.copy()
     processed = set()
-    
+
     for col in cols:
         if col in processed:
             continue
@@ -204,7 +209,7 @@ def combine_tot_high_low(df, near_zero_threshold=1000, max_reasonable_consumptio
             low_col = base + "_TOT_L"
             tot_col = base + "_TOT"
             anomaly_col = base + "_TOT_is_anomalous_jump"
-            
+
             if low_col in combined.columns:
                 # Combine high and low 16-bit parts into 32-bit unsigned int
                 import numpy as np
@@ -217,68 +222,76 @@ def combine_tot_high_low(df, near_zero_threshold=1000, max_reasonable_consumptio
                 # Mask low to 16 bits and shift high
                 result_arr = (high_arr << 16) | (low_arr & 0xFFFF)
                 combined[tot_col] = pd.Series(result_arr, index=combined.index)
-                
+
                 # Detectar saltos anómalos
                 tot_diff = combined[tot_col].diff()
                 is_anomalous_jump = pd.Series(False, index=combined.index)
-                
+
                 # Buscar consumos negativos que podrían ser resets o saltos anómalos:
-                # 1. Consumos muy negativos (< -max_reasonable_consumption) 
+                # 1. Consumos muy negativos (< -max_reasonable_consumption)
                 # 2. Cualquier caída hacia valores cercanos a 0 desde valores >1000
                 very_negative = tot_diff < -max_reasonable_consumption
-                
+
                 # Detectar caídas a valores cercanos a 0 desde valores altos
                 # diff() calcula current - previous, entonces diff negativo significa current < previous
                 # Si current está cerca de 0 y previous era alto, es sospechoso
                 tot_current = combined[tot_col]
                 tot_previous = combined[tot_col].shift(1)
-                
+
                 falls_to_near_zero = (
-                    (tot_diff < -1000) &  # caída significativa (diff negativo > 1000)
-                    (tot_current <= near_zero_threshold) &  # valor actual cerca de 0
-                    (tot_previous > 1000)  # valor anterior era alto
+                    (tot_diff < -1000)  # caída significativa (diff negativo > 1000)
+                    & (tot_current <= near_zero_threshold)  # valor actual cerca de 0
+                    & (tot_previous > 1000)  # valor anterior era alto
                 )
-                
+
                 possible_resets = very_negative | falls_to_near_zero
                 reset_indices = combined[possible_resets].index
-                
+
                 anomaly_count = 0
                 reset_count = 0
-                
+
                 for idx in reset_indices:
                     pos = combined.index.get_loc(idx)
                     if pos == 0:
                         continue
-                    
+
                     tot_before = combined[tot_col].iloc[pos - 1]
                     tot_after = combined[tot_col].iloc[pos]
-                    
+
                     # Validar si es reset real (totalizador después cerca de 0)
                     if abs(tot_after) <= near_zero_threshold:
                         # Verificar si el totalizador incrementa después del reset de forma consistente
                         # (ventana de 90 minutos para verificar comportamiento estable)
                         window_size = min(90, len(combined) - pos - 1)
                         incrementa_de_forma_estable = False
-                        
+
                         if window_size > 10:
-                            window_values = combined[tot_col].iloc[pos:pos+window_size+1].values
-                            
+                            window_values = (
+                                combined[tot_col]
+                                .iloc[pos : pos + window_size + 1]
+                                .values
+                            )
+
                             # Buscar primer valor >100 después del reset
                             first_nonzero_idx = None
                             for i, val in enumerate(window_values[1:], start=1):
                                 if val > 100:
                                     first_nonzero_idx = i
                                     break
-                            
+
                             if first_nonzero_idx is not None:
                                 # Verificar que el tiempo hasta incrementar sea razonable (<60 minutos)
                                 # y que después incremente de forma consistente
                                 if first_nonzero_idx <= 60:
                                     # Verificar estabilidad: al menos 5 valores consecutivos >0 después
-                                    valores_despues = window_values[first_nonzero_idx:first_nonzero_idx+5]
-                                    if len(valores_despues) >= 5 and all(v > 0 for v in valores_despues):
+                                    valores_despues = window_values[
+                                        first_nonzero_idx : first_nonzero_idx + 5
+                                    ]
+                                    if len(valores_despues) >= 5 and all(
+                                        v > 0 for v in valores_despues
+                                    ):
                                         incrementa_de_forma_estable = True
-                        
+
                         if incrementa_de_forma_estable:
                             # Es un reset REAL - el totalizador vuelve a incrementar
                             reset_count += 1
@@ -298,14 +311,14 @@ def combine_tot_high_low(df, near_zero_threshold=1000, max_reasonable_consumptio
                             f"Salto anómalo detectado en {base} en {idx}: "
                             f"TOT después del salto = {tot_after:,.0f} (no es reset real)"
                         )
-                
+
                 combined[anomaly_col] = is_anomalous_jump
-                
+
                 if anomaly_count > 0:
                     logging.info(
                         f"{base}: Detectados {reset_count} resets reales y {anomaly_count} saltos anómalos"
                     )
-                
+
                 processed.add(col)
                 processed.add(low_col)
                 # Optionally drop the original H/L columns
@@ -317,6 +330,44 @@ def combine_tot_high_low(df, near_zero_threshold=1000, max_reasonable_consumptio
 
 
 df = combine_tot_high_low(df)
+
+
+# Apply per10 multiplier BEFORE any other processing
+def apply_per10_multiplier(df):
+    """Apply x10 multiplier to totalizer columns for tags with per10=True."""
+    try:
+        engine = get_db_connection()
+        
+        tot_cols = [c for c in df.columns if c.endswith("_TOT")]
+        
+        if not tot_cols:
+            logging.info("No totalizer columns found for per10 multiplier")
+            return df
+        
+        result = df.copy()
+        multiplied_tags = []
+        
+        for col in tot_cols:
+            # Check if this tag has per10=True
+            per10 = get_tag_per10(engine, col)
+            
+            if per10:
+                result[col] = result[col] * 10
+                multiplied_tags.append(col)
+                logging.info(f"Applied per10 multiplier (x10) to {col}")
+        
+        if multiplied_tags:
+            logging.info(f"per10 multiplier applied to {len(multiplied_tags)} tags")
+        else:
+            logging.info("No tags with per10=True found in dataset")
+        
+        return result
+    except Exception as e:
+        logging.warning(f"Could not apply per10 multiplier: {e}")
+        return df
+
+
+df = apply_per10_multiplier(df)
 
 
 # Regla de calidad: rect_0 -> si el TOT calculado es 0, reemplazar por último valor válido (>0)
