@@ -177,7 +177,7 @@ def convert_tag_name_to_csm(tag_total):
 
     # Remove CL_CAT_ prefix if present
     tag_without_prefix = tag_total.replace("CL_CAT_", "")
-    
+
     # Replace _TOT with _CSM
     return tag_without_prefix.replace("_TOT", "_CSM")
 
@@ -242,7 +242,7 @@ def save_hourly_to_db(csv_path=None, cfg=None):
     total_upserts = 0
     total_corrections = 0
     insertion_time = datetime.now()
-    
+
     # Tracking de señales procesadas
     successful_signals = []
     missing_signals = []
@@ -252,7 +252,7 @@ def save_hourly_to_db(csv_path=None, cfg=None):
         logging.info(
             "Processing raw consumption column for %s (%s)", base_tag, source_col
         )
-        
+
         try:
             # Convert _TOT to _CSM
             csm_tag = convert_tag_name_to_csm(base_tag)
@@ -269,6 +269,8 @@ def save_hourly_to_db(csv_path=None, cfg=None):
             # Prepare data for insertion
             records_to_insert = []
             correction_records = []
+            negative_consumption_count = 0
+            
             for _, row in df.iterrows():
                 timestamp_raw = row["timeStamp"]
                 value = row[source_col]
@@ -286,6 +288,29 @@ def save_hourly_to_db(csv_path=None, cfg=None):
                     continue
 
                 raw_value = float(value)
+                
+                # Detectar consumos negativos anómalos y crear rectificación
+                if raw_value < 0:
+                    negative_consumption_count += 1
+                    logging.warning(
+                        f"⚠️  Consumo negativo detectado en {csm_tag} a las {local_ts}: {raw_value:.2f} L"
+                    )
+                    logging.warning(f"   → Corrigiendo a 0.0 y guardando como rectificación")
+                    
+                    # Crear rectificación automática
+                    descrip = f"Negative consumption correction: {raw_value:.3f} → 0.0 (automatic)"
+                    correction_records.append(
+                        {
+                            "data": local_ts,
+                            "data_insercio": insertion_time,
+                            "idtag": int(idtag),
+                            "valor": 0.0,
+                            "tipus": 1,
+                            "descrip": descrip,
+                        }
+                    )
+                    # Guardar 0 en lugar del valor negativo
+                    raw_value = 0.0
 
                 records_to_insert.append(
                     {
@@ -328,6 +353,11 @@ def save_hourly_to_db(csv_path=None, cfg=None):
             logging.info(
                 f"Inserting {len(records_to_insert)} records for tag {csm_tag} (idtag={idtag})"
             )
+            
+            if negative_consumption_count > 0:
+                logging.warning(
+                    f"⚠️  Detectados {negative_consumption_count} consumos negativos en {csm_tag} → Corregidos a 0"
+                )
 
             # Execute batch upsert using SQLAlchemy
             try:
@@ -376,7 +406,11 @@ def save_hourly_to_db(csv_path=None, cfg=None):
                     with db.connect() as conn:
                         result = conn.execute(
                             delete_sql,
-                            {"idtag": idtag, "min_date": min_date, "max_date": max_date},
+                            {
+                                "idtag": idtag,
+                                "min_date": min_date,
+                                "max_date": max_date,
+                            },
                         )
                         deleted_count = result.rowcount
                         conn.commit()
@@ -423,37 +457,41 @@ def save_hourly_to_db(csv_path=None, cfg=None):
                     )
                     error_signals.append(csm_tag)
                     continue
-            
+
             # Añadir a señales exitosas
             successful_signals.append(csm_tag)
-            
+
         except Exception as e:
             logging.error(f"❌ Unexpected error processing {base_tag}: {str(e)}")
             error_signals.append(base_tag)
             continue
 
     # Resumen final
-    logging.info("\n" + "="*80)
+    logging.info("\n" + "=" * 80)
     logging.info("RESUMEN DE INSERCIÓN EN POSTGRESQL")
-    logging.info("="*80)
+    logging.info("=" * 80)
     logging.info(f"✓ Señales insertadas correctamente: {len(successful_signals)}")
     logging.info(f"  Total registros: {total_upserts}")
     logging.info(f"  Total correcciones: {total_corrections}")
-    
+
     if missing_signals:
-        logging.warning(f"\n⚠️  Señales NO encontradas en cfg_tags ({len(missing_signals)}):")
+        logging.warning(
+            f"\n⚠️  Señales NO encontradas en cfg_tags ({len(missing_signals)}):"
+        )
         for signal in sorted(set(missing_signals)):
             logging.warning(f"   - {signal}")
-    
+
     if error_signals:
-        logging.error(f"\n❌ Señales con errores durante inserción ({len(set(error_signals))}):")
+        logging.error(
+            f"\n❌ Señales con errores durante inserción ({len(set(error_signals))}):"
+        )
         for signal in sorted(set(error_signals)):
             logging.error(f"   - {signal}")
-    
+
     if not missing_signals and not error_signals:
         logging.info("\n✓ Todas las señales fueron procesadas correctamente")
-    
-    logging.info("="*80 + "\n")
+
+    logging.info("=" * 80 + "\n")
 
     logging.info(f"Total records upserted: {total_upserts}")
     logging.info(f"Total corrections upserted: {total_corrections}")
