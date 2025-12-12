@@ -10,12 +10,49 @@ parent_dir = os.path.dirname(current_dir)
 sys.path.insert(0, current_dir)
 sys.path.insert(0, parent_dir)
 
+# Add persistencia to path for db_connection
+sys.path.insert(0, os.path.join(parent_dir, "persistencia"))
+
 from compute_consumption import (
     append_minute_consumption,
     attach_anomalies_to_df,
     detect_counter_resets,
     detect_phantom_totalizer_jumps,
 )
+from db_connection import get_db_connection, get_tag_per10
+
+
+def apply_per10_multiplier(df):
+    """Apply x10 multiplier to totalizer columns for tags with per10=True."""
+    engine = get_db_connection()
+    
+    tot_cols = [c for c in df.columns if c.endswith(("_TOT", "_TOT_H", "_TOT_L"))]
+    
+    if not tot_cols:
+        print("No totalizer columns found to apply per10 multiplier")
+        return df
+    
+    result = df.copy()
+    multiplied_tags = []
+    
+    for col in tot_cols:
+        # Extract base tag name (remove _TOT, _TOT_H, _TOT_L suffix)
+        tag_name = col.replace("_TOT_H", "").replace("_TOT_L", "").replace("_TOT", "")
+        
+        # Check if this tag has per10=True
+        per10 = get_tag_per10(engine, tag_name + "_TOT")
+        
+        if per10:
+            result[col] = result[col] * 10
+            multiplied_tags.append(col)
+            print(f"  Multiplied {col} by 10 (per10=True)")
+    
+    if multiplied_tags:
+        print(f"Applied per10 multiplier to {len(multiplied_tags)} totalizer columns")
+    else:
+        print("No tags with per10=True found")
+    
+    return result
 
 
 def find_latest_all_minutes(path_root: str):
@@ -49,6 +86,10 @@ def main():
         print("Loaded CSV with auto-detected format")
 
     print(f"Loaded DataFrame with columns: {list(df.columns)}")
+
+    # Apply per10 multiplier to totalizer columns if needed
+    print("\n--- Applying per10 multiplier ---")
+    df = apply_per10_multiplier(df)
 
     # Check if consumption columns already exist (processed by run_compute_for_minutes.py)
     cons_cols = [c for c in df.columns if c.endswith("_cons")]

@@ -98,9 +98,39 @@ def get_tag_id(engine, tag_name):
             idtag = int(row[0])
             logging.info(f"Found idtag={idtag} for tag '{tag_name}'")
             return idtag
-
     except ValueError:
         raise
     except Exception as e:
         logging.error(f"Error querying tag ID for '{tag_name}': {e}")
         raise
+
+
+def get_tag_per10(engine, tag_name):
+    """Return per10 flag for a tag from cfg_tags. Returns False if not found."""
+
+    query = text(
+        """
+        SELECT per10
+        FROM ga_landing.cfg_tags
+        WHERE tag = :tag_name
+        LIMIT 1
+        """
+    )
+
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(query, {"tag_name": tag_name})
+            row = result.fetchone()
+
+            if row is None:
+                logging.warning(f"Tag '{tag_name}' not found in cfg_tags, assuming per10=False")
+                return False
+
+            per10 = bool(row[0]) if row[0] is not None else False
+            if per10:
+                logging.info(f"Tag '{tag_name}' has per10=True")
+            return per10
+
+    except Exception as e:
+        logging.warning(f"Error querying per10 for tag '{tag_name}': {e}, assuming False")
+        return False

@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- per10 multiplier feature for consumption calculation:
+  - `get_tag_per10()` function in `db_connection.py` queries per10 flag from cfg_tags table
+  - `apply_per10_multiplier()` function in `run_compute_consumption.py` multiplies totalizer columns by 10
+  - Automatic detection and multiplication of totalizador values at data loading stage
+  - Applied before consumption calculation so all downstream logic works automatically
+  - Affects 18 tags with per10=True flag in cfg_tags table
+
 ## [0.4.0] - 2025-12-05
 
 ### Added
