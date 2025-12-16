@@ -35,7 +35,8 @@
         {
             "name": "fetch_api_data",
             "enabled": true,
-            "filter":"LTD09"
+            "filter":"",
+            "cached": false
         },
         {
             "name": "save_to_csv",

@@ -11,6 +11,7 @@ The `per10` feature allows automatic multiplication of totalizer values by 10 fo
 Tags that need 10x multiplication have `per10=TRUE` in the `ga_landing.cfg_tags` table.
 
 Currently, 18 tags have this flag enabled:
+
 - ATT03_FTR_T01_D_TOT
 - ATT03_FTR_T01_I_TOT
 - CP010_FTR_C01_TOT
@@ -48,6 +49,7 @@ Currently, 18 tags have this flag enabled:
 **Multiplier is applied to totalizer values, not consumption values.**
 
 This approach is cleaner because:
+
 - ✅ Single multiplication point (at data loading)
 - ✅ All downstream logic works automatically
 - ✅ Reset detection uses correct scale
@@ -55,6 +57,7 @@ This approach is cleaner because:
 - ✅ Consumption calculation inherits correct scale
 
 Alternative (multiply consumption after calculation) would require:
+
 - ❌ Multiple multiplication points
 - ❌ Manual adjustment of anomaly corrections
 - ❌ Manual adjustment of reset compensations
@@ -63,6 +66,7 @@ Alternative (multiply consumption after calculation) would require:
 ### 4. Code Locations
 
 #### `persistencia/db_connection.py`
+
 ```python
 def get_tag_per10(engine, tag_name):
     """Return per10 flag for a tag from cfg_tags. Returns False if not found."""
@@ -70,6 +74,7 @@ def get_tag_per10(engine, tag_name):
 ```
 
 #### `adquisicion/run_compute_for_minutes.py`
+
 ```python
 def apply_per10_multiplier(df):
     """Apply x10 multiplier to totalizer columns for tags with per10=True."""
@@ -81,6 +86,7 @@ def apply_per10_multiplier(df):
 ```
 
 Called right after combining H/L into 32-bit totals, before any other processing:
+
 ```python
 df = combine_tot_high_low(df)      # Combine 16-bit H/L → 32-bit TOT
 df = apply_per10_multiplier(df)    # ← Applied here (NEW LOCATION)
@@ -93,11 +99,13 @@ df = append_minute_consumption(df) # Calculate consumption
 ## Testing
 
 Run `test_per10_multiplier.py` to verify functionality:
+
 ```bash
 python test_per10_multiplier.py
 ```
 
 Expected output:
+
 - Tags with per10=True are multiplied by 10
 - Tags with per10=False remain unchanged
 - Database queries work correctly
@@ -105,9 +113,10 @@ Expected output:
 ## Database Schema
 
 The `per10` field is a BOOLEAN in `ga_landing.cfg_tags`:
+
 ```sql
-SELECT tag, per10 
-FROM ga_landing.cfg_tags 
+SELECT tag, per10
+FROM ga_landing.cfg_tags
 WHERE tag LIKE '%_TOT'
 AND per10 = TRUE;
 ```
@@ -115,6 +124,7 @@ AND per10 = TRUE;
 ## Future Considerations
 
 If additional multipliers are needed (per100, per5, etc.), the same pattern can be extended:
+
 1. Add field to cfg_tags table
 2. Add query function to db_connection.py
 3. Add multiplier function to run_compute_consumption.py

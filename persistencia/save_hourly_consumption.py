@@ -272,11 +272,45 @@ def save_hourly_to_db(csv_path=None, cfg=None):
             records_to_insert = []
             correction_records = []
             negative_consumption_count = 0
-            last_negative_correction = (
-                None  # Track negative corrections for next hour compensation
-            )
-
-            for _, row in df.iterrows():
+            
+            # PASO 1: Detectar pares compensatorios (negativo + positivo)
+            compensatory_pairs = {}  # {index: info} para índices que forman parte de un par
+            
+            df_sorted = df.sort_index()
+            for i in range(len(df_sorted) - 1):
+                curr_value = df_sorted[data_col].iloc[i]
+                next_value = df_sorted[data_col].iloc[i + 1]
+                curr_idx = i
+                next_idx = i + 1
+                curr_ts = df_sorted.index[i]
+                next_ts = df_sorted.index[i + 1]
+                
+                # Detectar par: curr negativo, next positivo, magnitudes similares
+                if pd.notna(curr_value) and pd.notna(next_value):
+                    if curr_value < -100 and next_value > 100:
+                        ratio = abs(next_value / curr_value)
+                        if 0.8 < ratio < 1.2:  # Magnitudes dentro del 20%
+                            # Par compensatorio detectado
+                            net_value = curr_value + next_value
+                            logging.warning(
+                                f"⚠️  Par compensatorio detectado en {csm_tag}:"
+                            )
+                            logging.warning(
+                                f"   Índice {curr_idx}: {curr_value:.2f} L + Índice {next_idx}: {next_value:.2f} L = {net_value:.2f} L"
+                            )
+                            
+                            # Marcar ambos índices para corrección
+                            compensatory_pairs[curr_idx] = {
+                                'type': 'negative',
+                                'net_value': net_value,
+                                'next_idx': next_idx,
+                                'original_neg': curr_value,
+                                'original_pos': next_value
+                            }
+                            compensatory_pairs[next_idx] = {'type': 'positive'}  # Simplemente marcar como parte del par
+            
+            # PASO 2: Procesar datos aplicando correcciones
+            for position, (idx, row) in enumerate(df.iterrows()):
                 timestamp_raw = row["timeStamp"]
                 value = row[data_col]  # Usar data_col (corrected si existe, sino raw)
 
@@ -316,22 +350,50 @@ def save_hourly_to_db(csv_path=None, cfg=None):
                                 }
                             )
 
-                # Detectar consumos negativos anómalos (safety net)
-                if raw_value < 0:
+                # Verificar si es parte de un par compensatorio (usar position para indexar)
+                if position in compensatory_pairs:
+                    pair_info = compensatory_pairs[position]
+                    if pair_info['type'] == 'negative':  # Es el timestamp negativo (el primero del par)
+                        net_value = float(pair_info['net_value'])
+                        
+                        # Crear corrección para el timestamp negativo (usar valor neto)
+                        descrip = f"Compensatory pair correction: {pair_info['original_neg']:.3f} + {pair_info['original_pos']:.3f} = {net_value:.3f}"
+                        correction_records.append(
+                            {
+                                "data": local_ts,
+                                "data_insercio": insertion_time,
+                                "idtag": int(idtag),
+                                "valor": float(max(0.0, net_value)),  # No permitir negativos
+                                "tipus": 1,
+                                "descrip": descrip,
+                            }
+                        )
+                        raw_value = float(max(0.0, net_value))
+                        negative_consumption_count += 1
+                    else:  # Es el timestamp positivo (el segundo del par)
+                        # Crear corrección para eliminarlo (ya se contabilizó en el primero)
+                        descrip = f"Compensatory pair correction: eliminated (counted in previous hour)"
+                        correction_records.append(
+                            {
+                                "data": local_ts,
+                                "data_insercio": insertion_time,
+                                "idtag": int(idtag),
+                                "valor": 0.0,
+                                "tipus": 1,
+                                "descrip": descrip,
+                            }
+                        )
+                        raw_value = 0.0
+                
+                # Detectar consumos negativos NO compensados (safety net)
+                elif raw_value < 0:
                     negative_consumption_count += 1
-                    negative_amount = abs(raw_value)
                     logging.warning(
-                        f"⚠️  Consumo negativo detectado en {csm_tag} a las {local_ts}: {raw_value:.2f} L"
+                        f"⚠️  Consumo negativo NO compensado en {csm_tag} a las {local_ts}: {raw_value:.2f} L"
                     )
                     logging.warning(
                         f"   → Corrigiendo a 0.0 y guardando como rectificación"
                     )
-
-                    # Guardar para compensar la siguiente hora
-                    last_negative_correction = {
-                        "timestamp": local_ts,
-                        "amount": negative_amount,
-                    }
 
                     # Crear rectificación automática
                     descrip = f"Negative consumption correction: {raw_value:.3f} → 0.0 (automatic)"
@@ -347,45 +409,6 @@ def save_hourly_to_db(csv_path=None, cfg=None):
                     )
                     # Guardar 0 en lugar del valor negativo
                     raw_value = 0.0
-
-                # Detectar si esta hora compensa una corrección negativa de la hora anterior
-                elif last_negative_correction is not None:
-                    prev_ts = last_negative_correction["timestamp"]
-                    prev_amount = last_negative_correction["amount"]
-
-                    # Verificar si es la hora siguiente y si el valor es anormalmente alto
-                    time_diff = (local_ts - prev_ts).total_seconds() / 3600
-                    if 0.5 < time_diff < 1.5 and raw_value > 1000000:
-                        # Es probable que sea la compensación del reset
-                        # Calcular el consumo real restando la cantidad negativa corregida
-                        corrected_value = raw_value - prev_amount
-
-                        logging.warning(
-                            f"⚠️  Compensación de reset detectada en {csm_tag} a las {local_ts}"
-                        )
-                        logging.warning(f"   Valor original: {raw_value:.2f} L")
-                        logging.warning(
-                            f"   Compensación negativa previa: -{prev_amount:.2f} L"
-                        )
-                        logging.warning(
-                            f"   → Valor corregido: {corrected_value:.2f} L"
-                        )
-
-                        # Crear rectificación para esta hora
-                        descrip = f"Reset compensation: {raw_value:.3f} → {corrected_value:.3f} (compensating negative from previous hour)"
-                        correction_records.append(
-                            {
-                                "data": local_ts,
-                                "data_insercio": insertion_time,
-                                "idtag": int(idtag),
-                                "valor": corrected_value,
-                                "tipus": 1,
-                                "descrip": descrip,
-                            }
-                        )
-
-                        raw_value = corrected_value
-                        last_negative_correction = None  # Reset tracking
 
                 records_to_insert.append(
                     {

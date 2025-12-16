@@ -106,12 +106,19 @@ def get_tag_id(engine, tag_name):
 
 
 def get_tag_per10(engine, tag_name):
-    """Return per10 flag for a tag from cfg_tags. Returns False if not found."""
+    """Return per10 flag for a tag from ite_tags_consums. Returns False if not found.
+
+    NOTE: Must query ite_tags_consums (consumption tags), not cfg_tags.
+    The tag must be converted from _TOT to _CSM format for the query.
+    """
+
+    # Convert _TOT to _CSM since ite_tags_consums stores consumption tags
+    csm_tag = tag_name.replace("_TOT", "_CSM")
 
     query = text(
         """
         SELECT per10
-        FROM ga_landing.cfg_tags
+        FROM ga_landing.ite_tags_consums
         WHERE tag = :tag_name
         LIMIT 1
         """
@@ -119,18 +126,22 @@ def get_tag_per10(engine, tag_name):
 
     try:
         with engine.connect() as conn:
-            result = conn.execute(query, {"tag_name": tag_name})
+            result = conn.execute(query, {"tag_name": csm_tag})
             row = result.fetchone()
 
             if row is None:
-                logging.warning(f"Tag '{tag_name}' not found in cfg_tags, assuming per10=False")
+                logging.debug(
+                    f"Tag '{csm_tag}' not found in ite_tags_consums, assuming per10=False"
+                )
                 return False
 
             per10 = bool(row[0]) if row[0] is not None else False
             if per10:
-                logging.info(f"Tag '{tag_name}' has per10=True")
+                logging.info(f"Tag '{tag_name}' has per10=True (checked {csm_tag})")
             return per10
 
     except Exception as e:
-        logging.warning(f"Error querying per10 for tag '{tag_name}': {e}, assuming False")
+        logging.warning(
+            f"Error querying per10 for tag '{csm_tag}': {e}, assuming False"
+        )
         return False

@@ -1,7 +1,7 @@
-import os
-import sys
 import json
 import logging
+import os
+import sys
 from datetime import datetime
 
 import pandas as pd
@@ -16,6 +16,33 @@ if os.path.join(ROOT, "CAT_Conexions", "src") not in sys.path:
 from conexions import apiSagedCAT
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")
+
+
+def check_cached_files_exist(tags, out_dir):
+    """Check if all expected CSV files exist for the given tags.
+
+    Args:
+        tags: List of tag names (without _H/_L suffix)
+        out_dir: Directory where CSV files should be
+
+    Returns:
+        tuple: (all_exist: bool, missing_tags: list)
+    """
+    missing = []
+    for tag in tags:
+        # Check both _H and _L files (or single file if no suffix)
+        h_file = os.path.join(out_dir, f"{tag}_H.csv")
+        l_file = os.path.join(out_dir, f"{tag}_L.csv")
+        single_file = os.path.join(out_dir, f"{tag}.csv")
+
+        # Tag must have either both H/L files OR a single file
+        has_hl = os.path.exists(h_file) and os.path.exists(l_file)
+        has_single = os.path.exists(single_file)
+
+        if not (has_hl or has_single):
+            missing.append(tag)
+
+    return len(missing) == 0, missing
 
 
 def download_minute_data(cfg=None):
@@ -38,7 +65,11 @@ def download_minute_data(cfg=None):
     nexustoken = api_cfg.get("nexustoken")
     vista = api_cfg.get("vista")
 
-    headers = {"nexustoken": nexustoken, "Content-Type": "application/json"} if nexustoken else None
+    headers = (
+        {"nexustoken": nexustoken, "Content-Type": "application/json"}
+        if nexustoken
+        else None
+    )
     api = apiSagedCAT(vista=vista, headers=headers)
 
     period = cfg.get("period", {})
@@ -51,9 +82,11 @@ def download_minute_data(cfg=None):
 
     # Determinar comportamiento según filtro en la config
     filter_prefix = None
-    for task in cfg.get('tasks', []):
-        if task.get('name') == 'fetch_api_data':
-            filter_prefix = task.get('filter')
+    use_cached = True  # default
+    for task in cfg.get("tasks", []):
+        if task.get("name") == "fetch_api_data":
+            filter_prefix = task.get("filter")
+            use_cached = task.get("cached", True)
             break
 
     use_all = False
@@ -76,10 +109,73 @@ def download_minute_data(cfg=None):
         if filter_prefix:
             orig_count = len(tags)
             tags = [t for t in tags if filter_prefix in t]
-            logging.info("Filtro '%s' aplicado a señales: %d -> %d", filter_prefix, orig_count, len(tags))
+            logging.info(
+                "Filtro '%s' aplicado a señales: %d -> %d",
+                filter_prefix,
+                orig_count,
+                len(tags),
+            )
             if not tags:
-                logging.warning("No hay señales que contengan '%s' en %s", filter_prefix, signals_file)
+                logging.warning(
+                    "No hay señales que contengan '%s' en %s",
+                    filter_prefix,
+                    signals_file,
+                )
                 return None, []
+
+        # Check if cached files exist when cache is enabled
+        out_dir = os.path.join(os.path.dirname(__file__), "minute_data")
+        if use_cached:
+            all_cached, missing_tags = check_cached_files_exist(tags, out_dir)
+
+            if all_cached:
+                logging.info(
+                    "✓ Cache válido: todos los archivos CSV del filtro '%s' existen (%d tags)",
+                    filter_prefix or "ALL",
+                    len(tags),
+                )
+                logging.info("Cargando datos desde archivos CSV cacheados...")
+                
+                # Load individual CSV files and combine them
+                combined = []
+                for tag in tags:
+                    h_file = os.path.join(out_dir, f"{tag}_H.csv")
+                    l_file = os.path.join(out_dir, f"{tag}_L.csv")
+                    single_file = os.path.join(out_dir, f"{tag}.csv")
+                    
+                    if os.path.exists(h_file) and os.path.exists(l_file):
+                        # Load H and L files
+                        df_h = pd.read_csv(h_file, parse_dates=['timeStamp'], index_col='timeStamp')
+                        df_l = pd.read_csv(l_file, parse_dates=['timeStamp'], index_col='timeStamp')
+                        combined.append(df_h)
+                        combined.append(df_l)
+                        logging.info(f"Cargado desde cache: {tag} (H y L)")
+                    elif os.path.exists(single_file):
+                        df_single = pd.read_csv(single_file, parse_dates=['timeStamp'], index_col='timeStamp')
+                        combined.append(df_single)
+                        logging.info(f"Cargado desde cache: {tag}")
+                
+                if combined:
+                    combined_df = pd.concat(combined, axis=1)
+                    logging.info(f"Datos combinados desde cache: {len(combined_df)} filas, {len(combined_df.columns)} columnas")
+                    return combined_df, []
+                else:
+                    logging.warning("No se pudo cargar ningún archivo del cache")
+                    return None, []
+            else:
+                logging.warning(
+                    "Cache incompleto: faltan %d archivos de %d tags del filtro '%s'",
+                    len(missing_tags),
+                    len(tags),
+                    filter_prefix or "ALL",
+                )
+                logging.info(
+                    "Archivos faltantes: %s",
+                    missing_tags[:5] if len(missing_tags) > 5 else missing_tags,
+                )
+                logging.info("Descargando todos los tags del filtro desde la API...")
+        else:
+            logging.info("cached=False: descargando datos desde API (ignorando cache)")
     else:
         tags = None
 
@@ -94,9 +190,9 @@ def download_minute_data(cfg=None):
     # Construir mapa tag -> uid
     tag_uid_map = {}
     for index, row in uids_df.iterrows():
-        for element in row.get('columns', []):
-            name = element.get('name')
-            uid = element.get('uid')
+        for element in row.get("columns", []):
+            name = element.get("name")
+            uid = element.get("uid")
             if name and uid:
                 tag_uid_map[name] = uid
 
@@ -108,7 +204,9 @@ def download_minute_data(cfg=None):
     missing = []
 
     if use_all:
-        logging.info("Filter vacío en config: se descargarán todos los tags de la vista")
+        logging.info(
+            "Filter vacío en config: se descargarán todos los tags de la vista"
+        )
         tags = sorted(tag_uid_map.keys())
 
     for tag in tags:
@@ -133,14 +231,21 @@ def download_minute_data(cfg=None):
             missing.append(tag)
             continue
 
-        logging.info("Descargando datos minutales para %s (request_name=%s uid=%s)", tag, request_name, uid)
+        logging.info(
+            "Descargando datos minutales para %s (request_name=%s uid=%s)",
+            tag,
+            request_name,
+            uid,
+        )
 
         params = {
             "dataSource": "RAW",
             "resolution": resolution,
             "uids": [uid],
-            "startTs": datetime.timestamp(datetime.strptime(start, '%Y-%m-%d %H:%M:%S')),
-            "endTs": datetime.timestamp(datetime.strptime(end, '%Y-%m-%d %H:%M:%S')),
+            "startTs": datetime.timestamp(
+                datetime.strptime(start, "%Y-%m-%d %H:%M:%S")
+            ),
+            "endTs": datetime.timestamp(datetime.strptime(end, "%Y-%m-%d %H:%M:%S")),
         }
 
         # Use the 'tagviews' historic endpoint: the path expects the view UID
@@ -148,26 +253,29 @@ def download_minute_data(cfg=None):
         try:
             resp = api.HEADERS and api.HEADERS or headers
             import requests
-            response = requests.post(url, json=params, headers=resp)
+
+            response = requests.post(url, json=params, headers=resp, verify=False)
             response.raise_for_status()
             data = pd.json_normalize(response.json())
             if data.empty:
                 logging.info("No hay datos para %s", tag)
                 continue
 
-            if 'timeStamp' in data.columns and 'value' in data.columns:
-                df = data.set_index('timeStamp')[['value']]
-                df.index = pd.to_datetime(df.index, unit='s')
-                df.rename(columns={'value': tag}, inplace=True)
+            if "timeStamp" in data.columns and "value" in data.columns:
+                df = data.set_index("timeStamp")[["value"]]
+                df.index = pd.to_datetime(df.index, unit="s")
+                df.rename(columns={"value": tag}, inplace=True)
             else:
                 # intentar detectar columna de valor
-                val_cols = [c for c in data.columns if c.lower() in ('value', 'valor')]
+                val_cols = [c for c in data.columns if c.lower() in ("value", "valor")]
                 if val_cols:
-                    df = data.set_index('timeStamp')[[val_cols[0]]]
-                    df.index = pd.to_datetime(df.index, unit='s')
+                    df = data.set_index("timeStamp")[[val_cols[0]]]
+                    df.index = pd.to_datetime(df.index, unit="s")
                     df.rename(columns={val_cols[0]: tag}, inplace=True)
                 else:
-                    logging.warning("Respuesta inesperada para %s, columnas: %s", tag, data.columns)
+                    logging.warning(
+                        "Respuesta inesperada para %s, columnas: %s", tag, data.columns
+                    )
                     continue
 
             # Guardar CSV por tag
@@ -192,5 +300,5 @@ def download_minute_data(cfg=None):
     return combined_df, missing
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     download_minute_data()

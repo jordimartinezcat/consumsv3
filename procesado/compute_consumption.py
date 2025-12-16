@@ -117,7 +117,7 @@ def detect_counter_resets(
                             # Es un SALTO ANOMALO o OSCILACION ERRATICA - NO corregir
                             if is_near_zero and not is_stable_reset:
                                 print(
-                                    f"  OSCILACION ERRATICA detectada en {reset_idx}: {prev_value} → {curr_value}"
+                                    f"  OSCILACION ERRATICA detectada en {reset_idx}: {prev_value} -> {curr_value}"
                                 )
                                 print(
                                     f"    Totalizador vuelve a subir rapidamente, NO es reset real"
@@ -243,7 +243,6 @@ def append_minute_consumption(df: pd.DataFrame, total_columns=None) -> pd.DataFr
                 )
 
     return result
-
 
 def distribute_negative_compensations(
     df: pd.DataFrame, total_columns=None
@@ -402,10 +401,11 @@ def detect_phantom_totalizer_jumps(
                             result[anom_col] = np.nan
 
                         result.loc[idx, anom_col] = 0.0
+                        result.loc[idx, cons_col] = 0.0  # Also update consumption column
                         phantom_count += 1
                         reason = "revert" if reverts_to_previous else "flat-after jump"
                         print(
-                            f"  Phantom jump detected ({reason}) at {idx}: {df[cons_col].loc[idx]:.0f} → 0"
+                            f"  Phantom jump detected ({reason}) at {idx}: {df[cons_col].loc[idx]:.0f} -> 0"
                         )
 
         if phantom_count > 0:
