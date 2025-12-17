@@ -122,12 +122,25 @@ def load_existing_minutes():
     return None
 
 
-existing_minutes = load_existing_minutes()
-if existing_minutes is not None:
-    logging.info("Using cached minute dataset; skipping API download")
-    df = existing_minutes.copy()
+# Check if cache should be used based on config
+use_cached = True  # default
+for task in cfg.get("tasks", []):
+    if task.get("name") == "fetch_api_data":
+        use_cached = task.get("cached", True)
+        break
+
+existing_minutes = None
+if use_cached:
+    existing_minutes = load_existing_minutes()
+    if existing_minutes is not None:
+        logging.info("Using cached minute dataset; skipping API download")
+        df = existing_minutes.copy()
+    else:
+        logging.info("No cached dataset found, will download from API...")
 else:
-    logging.info("No cached dataset found, importing download module...")
+    logging.info("Cache disabled (cached=false), will download from API...")
+
+if existing_minutes is None:
     from download_minute_data import download_minute_data
 
     # Read API config only when needed
@@ -231,69 +244,72 @@ def combine_tot_high_low(
                 # indicando una oscilación temporal (probablemente por modificación manual)
                 # SOLUCIÓN: Corregir H al valor estable, manteniendo L sin cambios
                 # Esto hace que TOT32 se mantenga constante durante la oscilación
-                
+
                 # Detectar saltos en H (>2 unidades, no hacia 0)
                 h_diff = high_s.diff()
                 anomalous_h_jumps = (h_diff.abs() > 2) & (high_s != 0)
-                
+
                 oscillations_corrected = 0
                 processed_indices = set()  # Para evitar reprocesar los mismos índices
-                
+
                 for jump_idx in anomalous_h_jumps[anomalous_h_jumps].index:
                     # Skip if already processed
                     if jump_idx in processed_indices:
                         continue
-                        
+
                     jump_pos = combined.index.get_loc(jump_idx)
                     if jump_pos == 0:
                         continue
-                    
+
                     h_before = high_s.iloc[jump_pos - 1]
-                    
+
                     # Buscar reversión de H en ventana de 60 minutos
                     window_end_pos = min(jump_pos + 60, len(combined) - 1)
-                    window_indices = combined.index[jump_pos + 1:window_end_pos + 1]
-                    
+                    window_indices = combined.index[jump_pos + 1 : window_end_pos + 1]
+
                     if len(window_indices) == 0:
                         continue
-                    
+
                     h_window = high_s.loc[window_indices]
-                    
+
                     # Buscar donde H vuelve al valor original ±2
                     reversions = h_window[h_window.sub(h_before).abs() <= 2]
-                    
+
                     if not reversions.empty:
                         reversion_idx = reversions.index[0]
                         reversion_pos = combined.index.get_loc(reversion_idx)
-                        
+
                         # PATRÓN DETECTADO: Oscilación temporal en H
                         oscillation_minutes = reversion_pos - jump_pos + 1
-                        
+
                         # CORRECCIÓN: Reemplazar valores H oscilantes con H estable
                         # Mantener L sin cambios
-                        correction_range = combined.index[jump_pos:reversion_pos + 1]
-                        
+                        correction_range = combined.index[jump_pos : reversion_pos + 1]
+
                         # Guardar valores originales para logging
                         h_oscillating = high_s.loc[jump_idx]
                         tot_before = combined[tot_col].iloc[jump_pos - 1]
-                        
+
                         # Aplicar corrección: H = valor estable (h_before)
                         high_s.loc[correction_range] = h_before
-                        
+
                         # Recalcular TOT32 con H corregido
-                        combined.loc[correction_range, tot_col] = (
-                            high_s.loc[correction_range].astype(np.int64) * 65536 +
-                            low_s.loc[correction_range].astype(np.int64)
+                        combined.loc[correction_range, tot_col] = high_s.loc[
+                            correction_range
+                        ].astype(np.int64) * 65536 + low_s.loc[correction_range].astype(
+                            np.int64
                         )
-                        
+
                         # Consumo real: TOT después de la oscilación - TOT antes
-                        tot_after = combined[tot_col].iloc[min(reversion_pos + 1, len(combined) - 1)]
+                        tot_after = combined[tot_col].iloc[
+                            min(reversion_pos + 1, len(combined) - 1)
+                        ]
                         real_consumption = tot_after - tot_before
-                        
+
                         # Marcar todos los índices del rango como procesados
                         for idx in correction_range:
                             processed_indices.add(idx)
-                        
+
                         logging.warning(
                             f"Oscilación H corregida en {base}: "
                             f"{jump_idx.strftime('%Y-%m-%d %H:%M')} -> {reversion_idx.strftime('%Y-%m-%d %H:%M')} "
@@ -301,16 +317,18 @@ def combine_tot_high_low(
                             f"H: {h_before:.0f} -> {h_oscillating:.0f} -> {h_before:.0f} (corregido). "
                             f"Consumo real período: {real_consumption:.0f} L"
                         )
-                        
+
                         oscillations_corrected += 1
-                
+
                 if oscillations_corrected > 0:
-                    logging.info(f"{base}: Corregidas {oscillations_corrected} oscilaciones H")
-                
+                    logging.info(
+                        f"{base}: Corregidas {oscillations_corrected} oscilaciones H"
+                    )
+
                 # ========================================================================
                 # DETECCIÓN DE SALTOS ANÓMALOS Y RESETS (lógica original)
                 # ========================================================================
-                
+
                 # Detectar saltos anómalos
                 tot_diff = combined[tot_col].diff()
                 is_anomalous_jump = pd.Series(False, index=combined.index)
@@ -420,59 +438,17 @@ def combine_tot_high_low(
 df = combine_tot_high_low(df)
 
 
-# Apply per10 multiplier BEFORE any other processing
-def apply_per10_multiplier(df):
-    """Apply x10 multiplier to totalizer columns for tags with per10=True.
-
-    IMPORTANT: After combine_tot_high_low(), columns are named like:
-    - PAB01_FTR_I02_TOT (32-bit combined)
-    - PBB02_FTR_T11_TOT (32-bit combined)
-
-    But cfg_tags has the original tag names that might be:
-    - PAB01_FTR_I02_TOT (if it was a single 32-bit tag originally)
-    - PBB02_FTR_T11_TOT (reconstructed from H/L, but stored with base name)
-
-    We query cfg_tags with the column name as-is.
-    """
-    try:
-        engine = get_db_connection()
-
-        tot_cols = [
-            c
-            for c in df.columns
-            if c.endswith("_TOT")
-            and not c.endswith("_TOT_H")
-            and not c.endswith("_TOT_L")
-        ]
-
-        if not tot_cols:
-            logging.info("No 32-bit totalizer columns found for per10 multiplier")
-            return df
-
-        result = df.copy()
-        multiplied_tags = []
-
-        for col in tot_cols:
-            # Query cfg_tags directly with the column name
-            per10 = get_tag_per10(engine, col)
-
-            if per10:
-                result[col] = result[col] * 10
-                multiplied_tags.append(col)
-                logging.info(f"Applied per10 multiplier (x10) to {col}")
-
-        if multiplied_tags:
-            logging.info(f"per10 multiplier applied to {len(multiplied_tags)} tags")
-        else:
-            logging.info("No tags with per10=True found in dataset")
-
-        return result
-    except Exception as e:
-        logging.warning(f"Could not apply per10 multiplier: {e}")
-        return df
-
-
-df = apply_per10_multiplier(df)
+# NOTA: El multiplicador per10 NO se aplica aquí en los totalizadores.
+# Se aplica solo UNA VEZ al final en save_hourly_consumption.py antes de guardar en BD.
+# Aplicarlo aquí causaba multiplicación x100 (x10 dos veces).
+#
+# def apply_per10_multiplier(df):
+#     """Apply x10 multiplier to totalizer columns for tags with per10=True.
+#     DEPRECATED: Moved to save_hourly_consumption.py to avoid double multiplication.
+#     """
+#     pass
+#
+# df = apply_per10_multiplier(df)  # DISABLED - causes x100 instead of x10
 
 
 # Regla de calidad: rect_0 -> si el TOT calculado es 0, reemplazar por último valor válido (>0)

@@ -13,19 +13,19 @@
         "vista": "560597aa-89e3-43df-9273-7875595319b8"
     },
     "postprocess": {
-           "combine_totals": true,
-           "compute": {
-               "force_minute_requery_hours": [
-                   "2025-06-02 11:00:00"
-               ],
-               "manual_overrides": {
-                   "2025-06-02 11:00:00": {
-                       "force_minute_sum": 0,
-                       "tag": "SPIKE",
-                       "force_replace": true
-                   }
-               }
-           }
+        "combine_totals": true,
+        "compute": {
+            "force_minute_requery_hours": [
+                "2025-06-02 11:00:00"
+            ],
+            "manual_overrides": {
+                "2025-06-02 11:00:00": {
+                    "force_minute_sum": 0,
+                    "tag": "SPIKE",
+                    "force_replace": true
+                }
+            }
+        }
     },
     "period": {
         "start": "2025-01-01 00:00:00",
@@ -35,14 +35,14 @@
         {
             "name": "fetch_api_data",
             "enabled": true,
-            "filter":"",
+            "filter": "CCB05|CCB15",
             "cached": false
         },
         {
             "name": "save_to_csv",
             "enabled": true,
-            "output_dir":"",
-            "filename":""
+            "output_dir": "",
+            "filename": ""
         },
         {
             "name": "compute_consumption",

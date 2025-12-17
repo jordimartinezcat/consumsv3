@@ -19,7 +19,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from persistencia.db_connection import get_db_connection, get_tag_id
+from persistencia.db_connection import get_db_connection, get_tag_id, get_tag_per10
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")
 
@@ -268,14 +268,22 @@ def save_hourly_to_db(csv_path=None, cfg=None):
                 missing_signals.append(csm_tag)
                 continue
 
+            # Check per10 flag for this tag
+            per10_enabled = get_tag_per10(db.engine, base_tag)
+            per10_multiplier = 10.0 if per10_enabled else 1.0
+            if per10_enabled:
+                logging.info(f"✓ per10 multiplier ENABLED for {csm_tag} (x10)")
+
             # Prepare data for insertion
             records_to_insert = []
             correction_records = []
             negative_consumption_count = 0
-            
+
             # PASO 1: Detectar pares compensatorios (negativo + positivo)
-            compensatory_pairs = {}  # {index: info} para índices que forman parte de un par
-            
+            compensatory_pairs = (
+                {}
+            )  # {index: info} para índices que forman parte de un par
+
             df_sorted = df.sort_index()
             for i in range(len(df_sorted) - 1):
                 curr_value = df_sorted[data_col].iloc[i]
@@ -284,7 +292,7 @@ def save_hourly_to_db(csv_path=None, cfg=None):
                 next_idx = i + 1
                 curr_ts = df_sorted.index[i]
                 next_ts = df_sorted.index[i + 1]
-                
+
                 # Detectar par: curr negativo, next positivo, magnitudes similares
                 if pd.notna(curr_value) and pd.notna(next_value):
                     if curr_value < -100 and next_value > 100:
@@ -298,17 +306,19 @@ def save_hourly_to_db(csv_path=None, cfg=None):
                             logging.warning(
                                 f"   Índice {curr_idx}: {curr_value:.2f} L + Índice {next_idx}: {next_value:.2f} L = {net_value:.2f} L"
                             )
-                            
+
                             # Marcar ambos índices para corrección
                             compensatory_pairs[curr_idx] = {
-                                'type': 'negative',
-                                'net_value': net_value,
-                                'next_idx': next_idx,
-                                'original_neg': curr_value,
-                                'original_pos': next_value
+                                "type": "negative",
+                                "net_value": net_value,
+                                "next_idx": next_idx,
+                                "original_neg": curr_value,
+                                "original_pos": next_value,
                             }
-                            compensatory_pairs[next_idx] = {'type': 'positive'}  # Simplemente marcar como parte del par
-            
+                            compensatory_pairs[next_idx] = {
+                                "type": "positive"
+                            }  # Simplemente marcar como parte del par
+
             # PASO 2: Procesar datos aplicando correcciones
             for position, (idx, row) in enumerate(df.iterrows()):
                 timestamp_raw = row["timeStamp"]
@@ -344,7 +354,8 @@ def save_hourly_to_db(csv_path=None, cfg=None):
                                     "data": local_ts,
                                     "data_insercio": insertion_time,
                                     "idtag": int(idtag),
-                                    "valor": raw_value,
+                                    "valor": raw_value
+                                    * per10_multiplier,  # Aplicar per10
                                     "tipus": 1,
                                     "descrip": descrip,
                                 }
@@ -353,17 +364,20 @@ def save_hourly_to_db(csv_path=None, cfg=None):
                 # Verificar si es parte de un par compensatorio (usar position para indexar)
                 if position in compensatory_pairs:
                     pair_info = compensatory_pairs[position]
-                    if pair_info['type'] == 'negative':  # Es el timestamp negativo (el primero del par)
-                        net_value = float(pair_info['net_value'])
-                        
-                        # Crear corrección para el timestamp negativo (usar valor neto)
+                    if (
+                        pair_info["type"] == "negative"
+                    ):  # Es el timestamp negativo (el primero del par)
+                        net_value = float(pair_info["net_value"])
+
+                        # Crear corrección para el timestamp negativo (usar valor neto con per10)
                         descrip = f"Compensatory pair correction: {pair_info['original_neg']:.3f} + {pair_info['original_pos']:.3f} = {net_value:.3f}"
                         correction_records.append(
                             {
                                 "data": local_ts,
                                 "data_insercio": insertion_time,
                                 "idtag": int(idtag),
-                                "valor": float(max(0.0, net_value)),  # No permitir negativos
+                                "valor": float(max(0.0, net_value))
+                                * per10_multiplier,  # Aplicar per10
                                 "tipus": 1,
                                 "descrip": descrip,
                             }
@@ -378,13 +392,14 @@ def save_hourly_to_db(csv_path=None, cfg=None):
                                 "data": local_ts,
                                 "data_insercio": insertion_time,
                                 "idtag": int(idtag),
-                                "valor": 0.0,
+                                "valor": 0.0
+                                * per10_multiplier,  # Aplicar per10 (0.0 * 10 = 0.0)
                                 "tipus": 1,
                                 "descrip": descrip,
                             }
                         )
                         raw_value = 0.0
-                
+
                 # Detectar consumos negativos NO compensados (safety net)
                 elif raw_value < 0:
                     negative_consumption_count += 1
@@ -395,14 +410,15 @@ def save_hourly_to_db(csv_path=None, cfg=None):
                         f"   → Corrigiendo a 0.0 y guardando como rectificación"
                     )
 
-                    # Crear rectificación automática
+                    # Crear rectificación automática (aplicar per10 si está habilitado)
                     descrip = f"Negative consumption correction: {raw_value:.3f} → 0.0 (automatic)"
                     correction_records.append(
                         {
                             "data": local_ts,
                             "data_insercio": insertion_time,
                             "idtag": int(idtag),
-                            "valor": 0.0,
+                            "valor": 0.0
+                            * per10_multiplier,  # Aplicar per10 (0.0 * 10 = 0.0)
                             "tipus": 1,
                             "descrip": descrip,
                         }
@@ -410,12 +426,15 @@ def save_hourly_to_db(csv_path=None, cfg=None):
                     # Guardar 0 en lugar del valor negativo
                     raw_value = 0.0
 
+                # Aplicar multiplicador per10 si está habilitado
+                final_value = raw_value * per10_multiplier
+
                 records_to_insert.append(
                     {
                         "data": local_ts,
                         "data_insercio": insertion_time,
                         "idtag": int(idtag),
-                        "valor": raw_value,
+                        "valor": final_value,
                     }
                 )
 
@@ -564,4 +583,5 @@ def save_hourly_to_db(csv_path=None, cfg=None):
 
     logging.info(f"Total records upserted: {total_upserts}")
     logging.info(f"Total corrections upserted: {total_corrections}")
+    return total_upserts
     return total_upserts

@@ -105,10 +105,21 @@ def download_minute_data(cfg=None):
             logging.info("No hay tags en %s", signals_file)
             return None, []
 
-        # Aplicar filtro de configuración sobre la lista de señales (subcadena)
+        # Aplicar filtro de configuración sobre la lista de señales
+        # Soporta: subcadena simple O regex con | para múltiples valores
         if filter_prefix:
+            import re
+
             orig_count = len(tags)
-            tags = [t for t in tags if filter_prefix in t]
+
+            # Si el filtro contiene |, tratarlo como regex (OR pattern)
+            if "|" in filter_prefix:
+                pattern = re.compile(filter_prefix)
+                tags = [t for t in tags if pattern.search(t)]
+            else:
+                # Si no, búsqueda simple de subcadena
+                tags = [t for t in tags if filter_prefix in t]
+
             logging.info(
                 "Filtro '%s' aplicado a señales: %d -> %d",
                 filter_prefix,
@@ -135,29 +146,39 @@ def download_minute_data(cfg=None):
                     len(tags),
                 )
                 logging.info("Cargando datos desde archivos CSV cacheados...")
-                
+
                 # Load individual CSV files and combine them
                 combined = []
                 for tag in tags:
                     h_file = os.path.join(out_dir, f"{tag}_H.csv")
                     l_file = os.path.join(out_dir, f"{tag}_L.csv")
                     single_file = os.path.join(out_dir, f"{tag}.csv")
-                    
+
                     if os.path.exists(h_file) and os.path.exists(l_file):
                         # Load H and L files
-                        df_h = pd.read_csv(h_file, parse_dates=['timeStamp'], index_col='timeStamp')
-                        df_l = pd.read_csv(l_file, parse_dates=['timeStamp'], index_col='timeStamp')
+                        df_h = pd.read_csv(
+                            h_file, parse_dates=["timeStamp"], index_col="timeStamp"
+                        )
+                        df_l = pd.read_csv(
+                            l_file, parse_dates=["timeStamp"], index_col="timeStamp"
+                        )
                         combined.append(df_h)
                         combined.append(df_l)
                         logging.info(f"Cargado desde cache: {tag} (H y L)")
                     elif os.path.exists(single_file):
-                        df_single = pd.read_csv(single_file, parse_dates=['timeStamp'], index_col='timeStamp')
+                        df_single = pd.read_csv(
+                            single_file,
+                            parse_dates=["timeStamp"],
+                            index_col="timeStamp",
+                        )
                         combined.append(df_single)
                         logging.info(f"Cargado desde cache: {tag}")
-                
+
                 if combined:
                     combined_df = pd.concat(combined, axis=1)
-                    logging.info(f"Datos combinados desde cache: {len(combined_df)} filas, {len(combined_df.columns)} columnas")
+                    logging.info(
+                        f"Datos combinados desde cache: {len(combined_df)} filas, {len(combined_df.columns)} columnas"
+                    )
                     return combined_df, []
                 else:
                     logging.warning("No se pudo cargar ningún archivo del cache")

@@ -16,7 +16,7 @@ from sqlalchemy import text
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, ROOT)
 
-from persistencia.db_connection import get_db_connection, get_tag_id
+from persistencia.db_connection import get_db_connection, get_tag_id, get_tag_per10
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s - %(message)s")
 
@@ -153,6 +153,12 @@ def save_hourly_corrections_to_db(csv_path=None, cfg=None):
         # Get idtag from cfg_tags
         idtag = get_tag_id(db, csm_tag)
 
+        # Check per10 flag for this tag
+        per10_enabled = get_tag_per10(db.engine, base_tag)
+        per10_multiplier = 10.0 if per10_enabled else 1.0
+        if per10_enabled:
+            logging.info(f"✓ per10 multiplier ENABLED for {csm_tag} (x10)")
+
         # Prepare records for insertion
         records_to_insert = []
         for _, row in df_with_corrections.iterrows():
@@ -163,12 +169,15 @@ def save_hourly_corrections_to_db(csv_path=None, cfg=None):
             if pd.isna(corrected_value):
                 continue
 
+            # Apply per10 multiplier if enabled
+            final_value = float(corrected_value) * per10_multiplier
+
             # Create description
             original_value = row[cons_col]
             descrip = f"Script correction: {original_value:.3f} → {corrected_value:.3f}"
 
             records_to_insert.append(
-                (timestamp, insertion_time, idtag, float(corrected_value), descrip)
+                (timestamp, insertion_time, idtag, final_value, descrip)
             )
 
         logging.info(
@@ -203,4 +212,5 @@ def save_hourly_corrections_to_db(csv_path=None, cfg=None):
             raise
 
     logging.info(f"Total correction records inserted: {total_inserted}")
+    return total_inserted
     return total_inserted
