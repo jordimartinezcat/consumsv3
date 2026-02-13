@@ -39,14 +39,16 @@ def main():
         return 2
 
     print(f"Loading combined CSV: {src}")
-    # Try to detect CSV format first
-    try:
+    # Try to detect CSV format by checking first line
+    with open(src, 'r') as f:
+        first_line = f.readline()
+    
+    if ';' in first_line:
         df = pd.read_csv(src, sep=";", decimal=",", index_col=0, parse_dates=True)
         print('Loaded CSV with European format (sep=";", decimal=",")')
-    except Exception as e:
-        print(f"European format failed: {e}, trying auto-detection...")
-        df = pd.read_csv(src, sep=None, engine="python", index_col=0, parse_dates=True)
-        print("Loaded CSV with auto-detected format")
+    else:
+        df = pd.read_csv(src, sep=",", decimal=".", index_col=0, parse_dates=True)
+        print('Loaded CSV with standard format (sep=",", decimal=".")')
 
     print(f"Loaded DataFrame with columns: {list(df.columns)}")
 
