@@ -122,7 +122,7 @@ def create_pdf_report(csv_path, output_path):
     elements = []
     
     # Logo de la empresa
-    logo_path = r"I:\logo\logo.jpg"
+    logo_path = os.path.join(ROOT, "assets", "logo.jpg")
     if os.path.exists(logo_path):
         try:
             logo = Image(logo_path, width=6*cm, height=2*cm, kind='proportional')

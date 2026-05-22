@@ -185,7 +185,7 @@ pip install pandas sqlalchemy psycopg2 requests msal reportlab pillow
 El PDF generat inclou:
 
 **Pàgina 1 - Resum**:
-- Logo corporatiu (I:\logo\logo.jpg)
+- Logo corporatiu (assets/logo.jpg)
 - Estadístiques generals
 - Taula resum amb percentatges
 
