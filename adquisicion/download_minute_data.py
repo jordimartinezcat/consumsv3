@@ -141,7 +141,7 @@ def download_minute_data(cfg=None):
 
             if all_cached:
                 logging.info(
-                    "✓ Cache válido: todos los archivos CSV del filtro '%s' existen (%d tags)",
+                    "[CACHE] Cache valido: todos los archivos CSV del filtro '%s' existen (%d tags)",
                     filter_prefix or "ALL",
                     len(tags),
                 )
@@ -310,8 +310,17 @@ def download_minute_data(cfg=None):
     combined_df = None
     if combined:
         combined_df = pd.concat(combined, axis=1)
+        
+        # Limpiar índice antes de guardar
+        if isinstance(combined_df.index, pd.DatetimeIndex):
+            # Eliminar filas con timestamps inválidos (NaT)
+            combined_df = combined_df[combined_df.index.notnull()]
+            # Resetear índice a string para evitar problemas de formato
+            combined_df = combined_df.reset_index()
+            combined_df.rename(columns={'index': 'timeStamp'}, inplace=True)
+        
         combined_out = os.path.join(out_dir, "all_minutes.csv")
-        combined_df.to_csv(combined_out, index=True)
+        combined_df.to_csv(combined_out, index=False)
         logging.info("Datos combinados guardados en %s", combined_out)
 
     if missing:

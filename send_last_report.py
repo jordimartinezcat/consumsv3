@@ -85,10 +85,10 @@ try:
         logger=logger
     )
     
-    print("\n✓ Email enviat correctament")
+    print("\n[OK] Email enviat correctament")
     
 except Exception as e:
-    print(f"\n✗ Error enviant email: {e}")
+    print(f"\n[ERROR] Error enviant email: {e}")
     import traceback
     traceback.print_exc()
     sys.exit(1)
