@@ -6,6 +6,7 @@ Este módulo procesa datos de consumo minutos corregidos y genera:
 2. Suma horaria aplicando correcciones de anomalías (_anom)
 """
 
+import json
 import os
 from datetime import datetime
 
@@ -151,16 +152,23 @@ def process_latest_minute_data(root_path=None):
     if root_path is None:
         root_path = os.path.dirname(os.path.dirname(__file__))
 
-    # Buscar el archivo más reciente en procesado/Data
-    data_dir = os.path.join(root_path, "procesado", "Data")
-    pattern = os.path.join(data_dir, "consumption_minutes_with_anom_*.csv")
-
+    # Buscar el archivo más reciente - primero en adquisicion/minute_data, luego en procesado/Data
     import glob
 
-    files = glob.glob(pattern)
+    # Priorizar archivos de procesado/Data (CON detección de anomalías)
+    data_dir = os.path.join(root_path, "procesado", "Data")
+    pattern1 = os.path.join(data_dir, "consumption_minutes_with_anom_*.csv")
+    files = glob.glob(pattern1)
+
+    # Fallback a adquisicion/minute_data (sin anomalías)
+    if not files:
+        minute_data_dir = os.path.join(root_path, "adquisicion", "minute_data")
+        pattern2 = os.path.join(minute_data_dir, "all_minutes_*.csv")
+        files = glob.glob(pattern2)
+
     if not files:
         raise FileNotFoundError(
-            f"No se encontraron archivos de consumo minutos en {data_dir}"
+            f"No se encontraron archivos de consumo minutos en {data_dir} ni en adquisicion/minute_data"
         )
 
     # Obtener el más reciente
@@ -192,10 +200,47 @@ def process_latest_minute_data(root_path=None):
 
     # Procesar agregación horaria
     df_hourly = aggregate_to_hourly(df_minutes)
+    
+    print(f"Datos horarios generados. Shape: {df_hourly.shape}")
+    print(f"Primeras 3 horas: {df_hourly.index[:3].tolist()}")
+    print(f"Últimas 3 horas: {df_hourly.index[-3:].tolist()}")
 
-    # Generar archivo de salida
+    # Leer configuración para filtrar por periodo
+    config_path = os.path.join(root_path, "consums_config.json")
+    if os.path.exists(config_path):
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        
+        # Parsear period_end
+        period_start = pd.to_datetime(config["period"]["start"])
+        period_end = pd.to_datetime(config["period"]["end"])
+        
+        print(f"Periodo configurado (local Madrid): {period_start} a {period_end}")
+        
+        # Los timestamps en el índice son naive pero representan UTC
+        # Necesitamos convertir period_end de Madrid a UTC
+        print(f"Índice tiene timezone: {df_hourly.index.tz}")
+        
+        # Convertir period_end de Madrid a UTC
+        period_end_madrid = period_end.tz_localize("Europe/Madrid")
+        period_end_utc = period_end_madrid.tz_convert("UTC").tz_localize(None)  # Quitar tz para comparar con naive
+        
+        print(f"Periodo ajustado (UTC naive): hasta {period_end_utc}")
+        
+        # Filtrar para mantener solo las horas completas dentro del periodo
+        # Excluimos la hora que coincide con period_end_utc
+        print(f"Filtrando horas: mantener index < {period_end_utc}")
+        df_hourly = df_hourly[df_hourly.index < period_end_utc]
+        
+        print(f"Datos filtrados por periodo. Shape: {df_hourly.shape}")
+        if len(df_hourly) > 0:
+            print(f"Rango temporal (UTC): {df_hourly.index.min()} a {df_hourly.index.max()}")
+
+    # Generar archivo de salida en procesado/Data
+    output_dir = os.path.join(root_path, "procesado", "Data")
+    os.makedirs(output_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_file = os.path.join(data_dir, f"consumption_hourly_{timestamp}.csv")
+    output_file = os.path.join(output_dir, f"consumption_hourly_{timestamp}.csv")
 
     # Guardar con formato europeo
     df_hourly.to_csv(output_file, sep=";", decimal=",", index=True)

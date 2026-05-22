@@ -57,3 +57,7 @@ poetry.lock
 
 # Windows
 Thumbs.db
+
+# Sensitive files (credentials, tokens)
+token_cache.json
+consums_config.json
