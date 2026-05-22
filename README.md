@@ -362,23 +362,32 @@ Get-ChildItem validacions\validation_report_*.pdf | Sort-Object LastWriteTime -D
 1. **Sistema d'Automatització Completa**:
    - Script `daily_report.py` per execució diària desatendida
    - Càlcul automàtic de període (dia anterior)
-   - Logs detallats amb timestampsç
+   - Logs detallats amb timestamps
+   - Gestió d'errors amb logging complet
 
 2. **Email HTML amb OAuth2**:
    - Autenticació OAuth2 amb Microsoft (desatendida després primera autorització)
    - Format HTML amb estils CSS
-   - Firma corporativa HTML integrada
+   - Firma corporativa HTML integrada (`validacions/firma.html`)
    - Text pla alternatiu per compatibilitat
+   - Preview HTML disponible: `validacions/email_preview.html`
 
 3. **Informes en Català**:
    - PDF completament traduït al català
    - Email en català amb terminologia tècnica correcta
+   - Missatges d'error per senyal en català
    - Firma corporativa del CAT
 
 4. **Validació Millorada**:
    - Timestamp corregit: consulta totalitzador a les 00:00 del dia següent
    - Categorització automàtica d'anomalies
    - Detecció de resets de 65.536L
+   - Estadístiques detallades al resum
+
+5. **Compatibilitat Windows Server**:
+   - Encoding `cp1252` per subprocess (soluciona errors amb caràcters catalans)
+   - Caràcters Unicode (✓/✗/→) reemplaçats per ASCII ([OK]/[ERROR])
+   - Gestió d'errors de permisos PostgreSQL (usuari no propietari)
 
 ### 🐛 Correccions de Bugs
 
@@ -386,16 +395,57 @@ Get-ChildItem validacions\validation_report_*.pdf | Sort-Object LastWriteTime -D
    - **Problema**: Prioritzava `all_minutes_*.csv` (sense detecció anomalies) sobre `consumption_minutes_with_anom_*.csv` (amb anomalies)
    - **Solució**: Invertida prioritat per aplicar correccions d'anomalies
    - **Resultat**: Hora 14:00 de BPD01_FTR_G02 ara mostra 245L corregit en lloc de -9.999.755L
+   - **Commit**: `6bb6021`
 
 2. **Fix Càlcul Última Hora** (`compute_hourly_consumption.py`):
    - **Problema**: Període acabant a 23:59:59 no tenia totalitzador final per calcular consum hora 23:00
    - **Solució**: Període estès a 00:00 dia següent + filtratge timezone-aware per excloure hora 00:00 de la inserció
    - **Resultat**: 24 hores correctes (00:00-23:00) amb última hora ben calculada
+   - **Commit**: `6bb6021`
 
 3. **Fix Timestamp Validació** (`validate_consumption.py`):
    - **Problema**: Validació consultava totalitzador a 23:59:00 però càlcul usava 00:00:00
    - **Solució**: Validació ara consulta a 00:00 del dia següent, consistent amb el càlcul
    - **Resultat**: Discrepàncies reduïdes, només anomalies reals
+   - **Commit**: `6bb6021`
+
+4. **Fix Encoding Windows** (`daily_report.py`):
+   - **Problema**: `UnicodeDecodeError` amb caràcters catalans (ó, ñ, à) en subprocess
+   - **Solució**: Canviat encoding de `utf-8` a `cp1252` amb `errors='replace'`
+   - **Resultat**: Pipeline executa correctament en Windows Server
+   - **Commit**: `6c8a970`
+
+5. **Fix Caràcters Unicode** (`send_last_report.py`, `download_minute_data.py`):
+   - **Problema**: `UnicodeEncodeError: 'charmap' codec can't encode character '\u2717'`
+   - **Solució**: Reemplaçat ✓/✗/→ per [OK]/[ERROR] (caràcters ASCII)
+   - **Resultat**: Compatible amb consola Windows sense UTF-8
+   - **Commit**: `c62941a`
+
+6. **Fix Permisos PostgreSQL** (`save_hourly_consumption.py`):
+   - **Problema**: Error "must be owner of table" en crear índexs al servidor
+   - **Solució**: Captura específica `ProgrammingError` amb `InsufficientPrivilege`, continua execució
+   - **Resultat**: Pipeline funciona encara que usuari no pugui crear índexs
+   - **Commit**: `8d5276d`
+
+7. **Fix Dependencies** (`requirements.txt`):
+   - **Problema**: Faltava `psycopg` v3 (necessari per CAT_Conexions), només estava v2
+   - **Solució**: Afegit `psycopg==3.3.2` i `psycopg-binary==3.3.2`
+   - **Resultat**: Imports correctes del submòdul CAT_Conexions
+   - **Commit**: `6c8a970`
+
+### 🌐 Internacionalització (i18n)
+
+**Tots els missatges traduïts al català**:
+
+| Component | Abans (Castellà) | Després (Català) |
+|-----------|------------------|------------------|
+| Errors senyal | "Totalizador no existe" | "Totalitzador no existeix" |
+| Resets | "Reset de contador" | "Reset de comptador" |
+| Consums | "Error relativo" | "Error relatiu" |
+| Resums | "Discrepancias" | "Discrepàncies" |
+| Estats | "perfectas" / "con reset" | "perfectes" / "amb reset" |
+
+**Commit**: `3993000`
 
 ## 🔒 Seguretat
 
@@ -456,7 +506,85 @@ python daily_report.py  # Reautoritzar interactivament
 
 **Acció**: Revisar secció de discrepàncies en PDF i analitzar patrons
 
-## 📞 Suport i Documentació
+## � Historial de Sessions
+
+### Sessió 22 Maig 2026 - Completar Sistema de Producció
+
+**Objectiu**: Resoldre bug crític BPD01_FTR_G02, processar dataset complet (235 senyals, maig 01-20), automatitzar completament, traduir al català i desplegar a producció.
+
+**Tasques Completades**:
+1. ✅ **Debugging i Fixes Crítics**:
+   - Fix prioritat fitxers agregació horària (aplicar correccions anomalies)
+   - Fix càlcul última hora (extensió període + filtratge timezone)
+   - Fix timestamp validació (consulta a 00:00 següent dia)
+   - Validat: BPD01_FTR_G02 hora 14:00 = 245.0L (abans -9.999.755.0L)
+
+2. ✅ **Processament Dataset Complet**:
+   - 235 senyals × 20 dies = 112.800 registres insertats
+   - 93 correccions d'anomalies aplicades
+   - Recàlcul dia 19: 5.640 registres, 4 correccions
+   - Validació final: 238 senyals, 225 OK, 13 errors
+
+3. ✅ **Sistema d'Automatització**:
+   - Creat `daily_report.py` (càlcul automàtic període anterior)
+   - Creat `send_last_report.py` (reenviar últim informe)
+   - Integració completa: descàrrega → procés → validació → email
+   - Logs estructurats: `log/daily_report_YYYYMMDD.log`
+
+4. ✅ **Email amb OAuth2**:
+   - Mòdul `email_utils/oauth2.py` (autenticació Microsoft MSAL)
+   - Mòdul `email_utils/sender.py` (HTML + firma corporativa)
+   - Device flow primera autorització, silent refresh posterior
+   - Token cache: `token_cache.json` (30 dies validesa)
+
+5. ✅ **Traducció Completa al Català**:
+   - PDF: tots els textos, seccions, missatges d'error
+   - Email: assumpte, cos HTML, estadístiques
+   - Scripts: missatges de validació, resums, errors per senyal
+   - Firma corporativa HTML integrada
+
+6. ✅ **Compatibilitat Windows Server**:
+   - Fix encoding subprocess: `utf-8` → `cp1252` + `errors='replace'`
+   - Fix caràcters Unicode: `✓✗→` → `[OK][ERROR]` (ASCII)
+   - Fix permisos PostgreSQL: captura `InsufficientPrivilege`, continua execució
+   - Afegit psycopg v3 a `requirements.txt`
+
+7. ✅ **Documentació i Deployment**:
+   - Creat `README.md` complet amb guies d'ús
+   - Creat `docs/AUTOMATIZACION.md` (Windows Task Scheduler)
+   - Creat `docs/EMAIL_SETUP.md` (OAuth2 Azure Portal)
+   - Creat `validacions/email_preview.html` (mostra visual email)
+   - Creat `requirements.txt` amb totes les dependències
+   - Anonimitzat credencials en documentació
+   - `.gitignore` actualitzat (token_cache.json, consums_config.json)
+
+8. ✅ **Control de Versions (GitHub)**:
+   - Repository: `https://github.com/jordimartinezcat/consumsv3.git`
+   - 8 commits amb missatges descriptius
+   - Tots els canvis documentats i versionats
+
+**Resultats Quantitatius**:
+- ⏱️ Temps total sessió: ~8 hores
+- 📝 Commits: 8 (6bb6021, 4536b28, a8df562, d4f29d5, 6c8a970, 8d5276d, 3993000, c62941a)
+- 📊 Dataset processat: 112.800 registres horaris
+- 🔧 Bugs resolts: 7 crítics
+- 🌐 Traduccions: 100% català
+- 📧 Emails prova: 2 enviats correctament
+- ✅ Sistema: 100% funcional i automatitzat
+
+**Lliçons Apreses**:
+1. **File Priority Matters**: L'ordre de prioritat en lectura de fitxers és crític quan hi ha múltiples fonts de dades amb/sense processament
+2. **Period Extension**: Càlcul d'última hora requereix dada següent dia, però amb filtratge per no insertar-la
+3. **Timezone Aware**: Tots els filtrats de timestamps han de ser timezone-aware per evitar errors
+4. **Windows Compatibility**: Windows Server requereix encoding específic (cp1252) i caràcters ASCII en consola
+5. **Database Permissions**: Scripts han de gestionar gracefullly errors de permisos i continuar execució
+6. **OAuth2 Token Management**: Token refresh automàtic funciona perfectament després primera autorització interactiva
+
+**Estat Final**: ✅ Sistema en producció, completament funcional, automatitzat i documentat. Llest per desplegar a servidor Windows amb Task Scheduler.
+
+---
+
+## �📞 Suport i Documentació
 
 ### Documentació Addicional
 

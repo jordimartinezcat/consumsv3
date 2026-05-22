@@ -106,16 +106,16 @@ def send_validation_report(
     body_text_lines = [
         f"Informe de Validació de Consums - {date_str}",
         "",
-        f"Període: {period_start} → {period_end}",
+        f"Període: {period_start} -> {period_end}",
         "",
         "=" * 70,
         "RESUM DE VALIDACIÓ",
         "=" * 70,
         f"Total senyals processades: {total}",
-        f"  ✓ OK (perfectes):         {ok_perfect} ({ok_perfect/total*100:.1f}%)" if total > 0 else "",
-        f"  ✓ OK (amb reset 16-bit):  {ok_reset} ({ok_reset/total*100:.1f}%)" if total > 0 else "",
-        f"  ⚠ Discrepàncies:          {discrepancies} ({discrepancies/total*100:.1f}%)" if total > 0 else "",
-        f"  ✗ Errors (sense dades):   {errors} ({errors/total*100:.1f}%)" if total > 0 else "",
+        f"  [OK] OK (perfectes):         {ok_perfect} ({ok_perfect/total*100:.1f}%)" if total > 0 else "",
+        f"  [OK] OK (amb reset 16-bit):  {ok_reset} ({ok_reset/total*100:.1f}%)" if total > 0 else "",
+        f"  [WARN] Discrepàncies:        {discrepancies} ({discrepancies/total*100:.1f}%)" if total > 0 else "",
+        f"  [ERROR] Errors (sense dades): {errors} ({errors/total*100:.1f}%)" if total > 0 else "",
         "",
         "L'informe detallat s'adjunta en format PDF.",
         "Les dades completes estan disponibles a l'arxiu CSV adjunt.",
@@ -145,15 +145,15 @@ def send_validation_report(
             <p>{date_str}</p>
         </div>
         <div class="content">
-            <p><strong>Període:</strong> {period_start} → {period_end}</p>
+            <p><strong>Període:</strong> {period_start} -> {period_end}</p>
             
             <div class="stats">
                 <h3>RESUM DE VALIDACIÓ</h3>
                 <p><strong>Total senyals processades:</strong> {total}</p>
-                <p>{"  ✓ OK (perfectes):         " + str(ok_perfect) + " (" + f"{ok_perfect/total*100:.1f}" + "%)" if total > 0 else ""}</p>
-                <p>{"  ✓ OK (amb reset 16-bit):  " + str(ok_reset) + " (" + f"{ok_reset/total*100:.1f}" + "%)" if total > 0 else ""}</p>
-                <p>{"  ⚠ Discrepàncies:          " + str(discrepancies) + " (" + f"{discrepancies/total*100:.1f}" + "%)" if total > 0 else ""}</p>
-                <p>{"  ✗ Errors (sense dades):   " + str(errors) + " (" + f"{errors/total*100:.1f}" + "%)" if total > 0 else ""}</p>
+                <p><span style="color: green;">[OK]</span> OK (perfectes): {ok_perfect} ({ok_perfect/total*100:.1f}%)</p>
+                <p><span style="color: green;">[OK]</span> OK (amb reset 16-bit): {ok_reset} ({ok_reset/total*100:.1f}%)</p>
+                <p><span style="color: orange;">[WARN]</span> Discrepàncies: {discrepancies} ({discrepancies/total*100:.1f}%)</p>
+                <p><span style="color: red;">[ERROR]</span> Errors (sense dades): {errors} ({errors/total*100:.1f}%)</p>
             </div>
             
             <p>L'informe detallat s'adjunta en format PDF.</p>
@@ -225,12 +225,12 @@ def send_validation_report(
             f"Reporte enviado exitosamente a: {', '.join(config_email['recipients'])}"
         )
         print(f"\n{'='*80}")
-        print(f"✓ Email enviado a: {', '.join(config_email['recipients'])}")
+        print(f"[OK] Email enviado a: {', '.join(config_email['recipients'])}")
         print(f"{'='*80}\n")
         
     except Exception as exc:
         logger.error(f"Error enviando email: {exc}")
         print(f"\n{'='*80}")
-        print(f"✗ Error enviando email: {exc}")
+        print(f"[ERROR] Error enviando email: {exc}")
         print(f"{'='*80}\n")
         raise
