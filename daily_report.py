@@ -82,7 +82,8 @@ def run_pipeline():
             cwd=str(ROOT),
             capture_output=True,
             text=True,
-            encoding="utf-8",
+            encoding="cp1252",  # Windows encoding for Spanish/Catalan
+            errors="replace",   # Replace invalid chars instead of crashing
             timeout=3600  # 1 hora timeout
         )
         
@@ -123,7 +124,8 @@ def run_validation():
             cwd=str(ROOT),
             capture_output=True,
             text=True,
-            encoding="utf-8",
+            encoding="cp1252",  # Windows encoding for Spanish/Catalan
+            errors="replace",   # Replace invalid chars instead of crashing
             timeout=1800  # 30 minutos timeout
         )
         

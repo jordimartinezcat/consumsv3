@@ -2,6 +2,8 @@
 # Sistema de monitorització de consums d'aigua industrial CAT
 
 # Database
+psycopg==3.3.2
+psycopg-binary==3.3.2
 psycopg2-binary==2.9.9
 sqlalchemy==2.0.23
 
