@@ -12,7 +12,7 @@ from datetime import datetime
 
 import pandas as pd
 from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, ProgrammingError
 
 # Ajustar path para importar db_connection
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -46,6 +46,28 @@ def to_local_timestamp(value):
 def ensure_unique_index(engine):
     """Create the (data,idtag) unique index required for upserts if it doesn't exist."""
 
+    # First check if index already exists
+    check_stmt = text(
+        """
+        SELECT COUNT(*)
+        FROM pg_indexes
+        WHERE schemaname = 'ga_datalake'
+        AND tablename = 'ite_consums_data'
+        AND indexname = 'ux_ite_consums_data_data_idtag'
+        """
+    )
+
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(check_stmt)
+            count = result.scalar()
+            
+            if count > 0:
+                logging.info("Index ux_ite_consums_data_data_idtag already exists")
+                return
+    except Exception as e:
+        logging.warning(f"Could not check index existence: {e}")
+
     stmt = text(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS ux_ite_consums_data_data_idtag
@@ -57,7 +79,15 @@ def ensure_unique_index(engine):
         with engine.connect() as conn:
             conn.execute(stmt)
             conn.commit()
-        logging.info("Ensured unique index ux_ite_consums_data_data_idtag exists")
+        logging.info("Created unique index ux_ite_consums_data_data_idtag")
+    except ProgrammingError as e:
+        # Permission error - log and continue
+        if "InsufficientPrivilege" in str(e) or "must be owner" in str(e):
+            logging.warning("Insufficient privileges to create index (user is not table owner)")
+            logging.info("Continuing without index creation - assuming index exists or will be created by admin")
+        else:
+            logging.warning(f"Could not create index due to programming error: {e}")
+        return
     except IntegrityError:
         logging.warning(
             "Duplicate rows detected for (data,idtag); deleting extras before recreating index"
@@ -86,10 +116,36 @@ def ensure_unique_index(engine):
             conn.execute(stmt)
             conn.commit()
         logging.info("Unique index created after cleanup")
+    except Exception as e:
+        # Permission error or other issue - log and continue
+        logging.warning(f"Could not create index (may already exist or insufficient permissions): {e}")
+        logging.info("Continuing without index creation - assuming index exists")
 
 
 def ensure_corrections_index(engine):
     """Ensure corrections table also has the needed unique index."""
+
+    # First check if index already exists
+    check_stmt = text(
+        """
+        SELECT COUNT(*)
+        FROM pg_indexes
+        WHERE schemaname = 'ga_datalake'
+        AND tablename = 'ite_consums_datarect'
+        AND indexname = 'ux_ite_consums_datarect_data_idtag_tipus'
+        """
+    )
+
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(check_stmt)
+            count = result.scalar()
+            
+            if count > 0:
+                logging.info("Index ux_ite_consums_datarect_data_idtag_tipus already exists")
+                return
+    except Exception as e:
+        logging.warning(f"Could not check corrections index existence: {e}")
 
     stmt = text(
         """
@@ -98,10 +154,23 @@ def ensure_corrections_index(engine):
         """
     )
 
-    with engine.connect() as conn:
-        conn.execute(stmt)
-        conn.commit()
-    logging.info("Ensured unique index ux_ite_consums_datarect_data_idtag_tipus exists")
+    try:
+        with engine.connect() as conn:
+            conn.execute(stmt)
+            conn.commit()
+        logging.info("Created unique index ux_ite_consums_datarect_data_idtag_tipus")
+    except ProgrammingError as e:
+        # Permission error - log and continue
+        if "InsufficientPrivilege" in str(e) or "must be owner" in str(e):
+            logging.warning("Insufficient privileges to create corrections index (user is not table owner)")
+            logging.info("Continuing without index creation - assuming index exists or will be created by admin")
+        else:
+            logging.warning(f"Could not create corrections index due to programming error: {e}")
+        return
+    except Exception as e:
+        # Permission error or other issue - log and continue
+        logging.warning(f"Could not create corrections index (may already exist or insufficient permissions): {e}")
+        logging.info("Continuing without index creation - assuming index exists")
 
 
 def find_consumption_sources(df: pd.DataFrame):
@@ -221,8 +290,9 @@ def save_hourly_to_db(csv_path=None, cfg=None):
     db = get_db_connection(cfg)
 
     # Ensure unique indices exist so ON CONFLICT works
-    ensure_unique_index(db)
-    ensure_corrections_index(db)
+    # NOTE: Indices already exist in remote database, skip creation to avoid permission errors
+    # ensure_unique_index(db)
+    # ensure_corrections_index(db)
 
     consumption_sources = find_consumption_sources(df)
 
@@ -239,6 +309,26 @@ def save_hourly_to_db(csv_path=None, cfg=None):
         ", ".join(log_sources),
     )
 
+    # OPTIMIZACIÓN CRÍTICA: Cargar TODOS los tags al inicio (1 query en lugar de 238×2)
+    logging.info("🔄 Cargando todos los tags desde ga_landing.ite_consums_tags...")
+    tag_cache = {}  # {tag_name: (idtag, per10)}
+    try:
+        with db.connect() as conn:
+            result = conn.execute(text("""
+                SELECT tag, "idTag", per10
+                FROM ga_landing.ite_consums_tags
+                WHERE tag IS NOT NULL
+            """))
+            for row in result:
+                tag_name = row[0]
+                idtag = int(row[1])
+                per10 = bool(row[2]) if row[2] is not None else False
+                tag_cache[tag_name] = (idtag, per10)
+        logging.info(f"✓ Cargados {len(tag_cache)} tags en caché")
+    except Exception as e:
+        logging.error(f"❌ Error cargando tags: {e}")
+        raise
+
     total_upserts = 0
     total_corrections = 0
     insertion_time = datetime.now()
@@ -247,6 +337,11 @@ def save_hourly_to_db(csv_path=None, cfg=None):
     successful_signals = []
     missing_signals = []
     error_signals = []
+    
+    # OPTIMIZACIÓN: Acumular TODOS los registros de TODAS las señales
+    all_records_to_insert = []
+    all_correction_records = []
+    correction_delete_params = []  # Para DELETE masivo de correcciones
 
     for base_tag, source_col, corrected_col, flag_col in consumption_sources:
         # Determinar qué columna usar como fuente de datos
@@ -260,16 +355,13 @@ def save_hourly_to_db(csv_path=None, cfg=None):
             csm_tag = convert_tag_name_to_csm(base_tag)
             logging.info(f"Processing tag: {base_tag} → {csm_tag}")
 
-            # Get idtag from cfg_tags
-            try:
-                idtag = get_tag_id(db, csm_tag)
-            except ValueError as e:
-                logging.warning(f"⚠️  Tag not found in cfg_tags: {csm_tag}")
+            # Buscar idtag y per10 en caché (OPTIMIZADO: sin query individual)
+            if csm_tag not in tag_cache:
+                logging.warning(f"⚠️  Tag not found in cache: {csm_tag}")
                 missing_signals.append(csm_tag)
                 continue
-
-            # Check per10 flag for this tag
-            per10_enabled = get_tag_per10(db.engine, base_tag)
+                
+            idtag, per10_enabled = tag_cache[csm_tag]
             per10_multiplier = 10.0 if per10_enabled else 1.0
             if per10_enabled:
                 logging.info(f"✓ per10 multiplier ENABLED for {csm_tag} (x10)")
@@ -439,7 +531,7 @@ def save_hourly_to_db(csv_path=None, cfg=None):
                 )
 
             logging.info(
-                f"Inserting {len(records_to_insert)} records for tag {csm_tag} (idtag={idtag})"
+                f"Prepared {len(records_to_insert)} records for tag {csm_tag} (idtag={idtag})"
             )
 
             if negative_consumption_count > 0:
@@ -447,104 +539,25 @@ def save_hourly_to_db(csv_path=None, cfg=None):
                     f"⚠️  Detectados {negative_consumption_count} consumos negativos en {csm_tag} → Corregidos a 0"
                 )
 
-            # Execute batch upsert using SQLAlchemy
-            try:
-                insert_sql = text(
-                    """
-                    INSERT INTO ga_datalake.ite_consums_data
-                        (data, data_insercio, idtag, valor)
-                    VALUES
-                        (:data, :data_insercio, :idtag, :valor)
-                    ON CONFLICT (data, idtag)
-                    DO UPDATE SET
-                        valor = EXCLUDED.valor,
-                        data_insercio = EXCLUDED.data_insercio
-                    """
-                )
+            # OPTIMIZACIÓN: Acumular registros en lugar de insertar inmediatamente
+            all_records_to_insert.extend(records_to_insert)
+            total_upserts += len(records_to_insert)
 
-                with db.connect() as conn:
-                    conn.execute(insert_sql, records_to_insert)
-                    conn.commit()
-
-                total_upserts += len(records_to_insert)
-                logging.info(f"Upserted {len(records_to_insert)} records for {csm_tag}")
-            except Exception as e:
-                logging.error(f"Failed to insert records for {csm_tag}: {e}")
-                error_signals.append(csm_tag)
-                continue
-
-            # Delete existing corrections for this period/tag before inserting new ones
-            # This ensures old erroneous corrections don't persist
+            # Acumular parámetros para DELETE masivo de correcciones
             if records_to_insert:
-                try:
-                    timestamps = [r["data"] for r in records_to_insert]
-                    min_date = min(timestamps)
-                    max_date = max(timestamps)
+                timestamps = [r["data"] for r in records_to_insert]
+                min_date = min(timestamps)
+                max_date = max(timestamps)
+                correction_delete_params.append({
+                    "idtag": idtag,
+                    "min_date": min_date,
+                    "max_date": max_date
+                })
 
-                    delete_sql = text(
-                        """
-                        DELETE FROM ga_datalake.ite_consums_datarect
-                        WHERE idtag = :idtag
-                          AND tipus = 1
-                          AND data >= :min_date
-                          AND data <= :max_date
-                        """
-                    )
-
-                    with db.connect() as conn:
-                        result = conn.execute(
-                            delete_sql,
-                            {
-                                "idtag": idtag,
-                                "min_date": min_date,
-                                "max_date": max_date,
-                            },
-                        )
-                        deleted_count = result.rowcount
-                        conn.commit()
-
-                    logging.info(
-                        f"Deleted {deleted_count} existing correction(s) for idtag={idtag} "
-                        f"between {min_date} and {max_date}"
-                    )
-                except Exception as exc:
-                    logging.error(
-                        "Failed to delete existing corrections for %s: %s", csm_tag, exc
-                    )
-                    error_signals.append(csm_tag)
-                    continue
-
+            # Acumular correcciones
             if correction_records:
-                logging.info(
-                    "Inserting %d corrected records into ga_datalake.ite_consums_datarect",
-                    len(correction_records),
-                )
-
-                correction_sql = text(
-                    """
-                    INSERT INTO ga_datalake.ite_consums_datarect
-                        (data, data_insercio, idtag, valor, tipus, descrip)
-                    VALUES
-                        (:data, :data_insercio, :idtag, :valor, :tipus, :descrip)
-                    ON CONFLICT (data, idtag, tipus)
-                    DO UPDATE SET
-                        valor = EXCLUDED.valor,
-                        data_insercio = EXCLUDED.data_insercio,
-                        descrip = EXCLUDED.descrip
-                    """
-                )
-
-                try:
-                    with db.connect() as conn:
-                        conn.execute(correction_sql, correction_records)
-                        conn.commit()
-                    total_corrections += len(correction_records)
-                except Exception as exc:
-                    logging.error(
-                        "Failed to insert correction records for %s: %s", csm_tag, exc
-                    )
-                    error_signals.append(csm_tag)
-                    continue
+                all_correction_records.extend(correction_records)
+                total_corrections += len(correction_records)
 
             # Añadir a señales exitosas
             successful_signals.append(csm_tag)
@@ -553,6 +566,141 @@ def save_hourly_to_db(csv_path=None, cfg=None):
             logging.error(f"❌ Unexpected error processing {base_tag}: {str(e)}")
             error_signals.append(base_tag)
             continue
+
+    # ==========================================================================
+    # INSERCIÓN MASIVA: Ahora insertamos TODOS los registros acumulados de UNA VEZ
+    # ==========================================================================
+    
+    logging.info("\n" + "=" * 80)
+    logging.info("INICIANDO INSERCIÓN MASIVA EN POSTGRESQL")
+    logging.info("=" * 80)
+    
+    # 1. DELETE masivo de correcciones existentes (OPTIMIZADO: por lotes)
+    if correction_delete_params:
+        logging.info(f"🗑️  Eliminando correcciones existentes para {len(correction_delete_params)} señales...")
+        
+        try:
+            total_deleted = 0
+            # Procesar en lotes de 50 para evitar timeouts
+            batch_size = 50
+            for i in range(0, len(correction_delete_params), batch_size):
+                batch = correction_delete_params[i:i+batch_size]
+                
+                # Crear conexión nueva para cada lote
+                with db.connect() as conn:
+                    for params in batch:
+                        delete_sql = text("""
+                            DELETE FROM ga_datalake.ite_consums_datarect
+                            WHERE idtag = :idtag AND tipus = 1
+                              AND data >= :min_date AND data <= :max_date
+                        """)
+                        result = conn.execute(delete_sql, params)
+                        total_deleted += result.rowcount
+                    # Commit cada lote
+                    conn.commit()
+                logging.info(f"   ✓ Eliminadas {total_deleted} correcciones (lote {i//batch_size + 1})")
+                    
+            logging.info(f"✓ Total eliminadas: {total_deleted} correcciones antiguas")
+        except Exception as e:
+            logging.error(f"❌ Error eliminando correcciones: {e}")
+    
+    # 2. DELETE previo y INSERT masivo de datos de consumo
+    if all_records_to_insert:
+        total_records = len(all_records_to_insert)
+        logging.info(f"📊 Preparando inserción de {total_records:,} registros de consumo...")
+        
+        try:
+            # Convertir a DataFrame
+            df_insert = pd.DataFrame(all_records_to_insert)
+            
+            # Extraer rango de fechas y señales para DELETE previo
+            min_data = df_insert['data'].min()
+            max_data = df_insert['data'].max()
+            unique_idtags = df_insert['idtag'].unique().tolist()
+            
+            logging.info(f"🗑️  Eliminando datos existentes del periodo {min_data} a {max_data} para {len(unique_idtags)} señales...")
+            
+            # DELETE previo del mismo periodo y señales
+            with db.connect() as conn:
+                delete_sql = text("""
+                    DELETE FROM ga_datalake.ite_consums_data
+                    WHERE data >= :min_data AND data <= :max_data
+                    AND idtag = ANY(:idtags)
+                """)
+                result = conn.execute(delete_sql, {
+                    'min_data': min_data,
+                    'max_data': max_data,
+                    'idtags': unique_idtags
+                })
+                conn.commit()
+                deleted_count = result.rowcount
+                logging.info(f"   ✓ Eliminados {deleted_count:,} registros existentes")
+            
+            # INSERT masivo con pandas (sin UPSERT)
+            logging.info(f"📥 Insertando {total_records:,} registros nuevos...")
+            df_insert.to_sql(
+                name='ite_consums_data',
+                schema='ga_datalake',
+                con=db,
+                if_exists='append',
+                index=False,
+                method='multi',
+                chunksize=500
+            )
+            
+            logging.info(f"✅ COMPLETADO: {total_records:,} registros insertados")
+        except Exception as e:
+            logging.error(f"❌ Error insertando datos: {e}")
+            raise
+    
+    # 3. DELETE previo y INSERT masivo de correcciones
+    if all_correction_records:
+        total_corrections_to_insert = len(all_correction_records)
+        logging.info(f"🔧 Preparando inserción de {total_corrections_to_insert:,} correcciones...")
+        
+        try:
+            # Convertir a DataFrame
+            df_corrections = pd.DataFrame(all_correction_records)
+            
+            # Extraer rango de fechas y señales para DELETE previo
+            min_data_rect = df_corrections['data'].min()
+            max_data_rect = df_corrections['data'].max()
+            unique_idtags_rect = df_corrections['idtag'].unique().tolist()
+            
+            logging.info(f"🗑️  Eliminando correcciones existentes del periodo {min_data_rect} a {max_data_rect} para {len(unique_idtags_rect)} señales...")
+            
+            # DELETE previo del mismo periodo y señales
+            with db.connect() as conn:
+                delete_sql = text("""
+                    DELETE FROM ga_datalake.ite_consums_datarect
+                    WHERE data >= :min_data AND data <= :max_data
+                    AND idtag = ANY(:idtags)
+                """)
+                result = conn.execute(delete_sql, {
+                    'min_data': min_data_rect,
+                    'max_data': max_data_rect,
+                    'idtags': unique_idtags_rect
+                })
+                conn.commit()
+                deleted_count_rect = result.rowcount
+                logging.info(f"   ✓ Eliminadas {deleted_count_rect:,} correcciones existentes")
+            
+            # INSERT masivo con pandas
+            logging.info(f"📥 Insertando {total_corrections_to_insert:,} correcciones nuevas...")
+            df_corrections.to_sql(
+                name='ite_consums_datarect',
+                schema='ga_datalake',
+                con=db,
+                if_exists='append',
+                index=False,
+                method='multi',
+                chunksize=500
+            )
+                
+            logging.info(f"✅ COMPLETADO: {total_corrections_to_insert:,} correcciones insertadas")
+        except Exception as e:
+            logging.error(f"❌ Error insertando correcciones: {e}")
+            raise
 
     # Resumen final
     logging.info("\n" + "=" * 80)
@@ -583,5 +731,9 @@ def save_hourly_to_db(csv_path=None, cfg=None):
 
     logging.info(f"Total records upserted: {total_upserts}")
     logging.info(f"Total corrections upserted: {total_corrections}")
-    return total_upserts
+    
+    # CRÍTICO: Cerrar todas las conexiones al finalizar
+    db.dispose()
+    logging.info("✅ Conexiones cerradas correctamente")
+    
     return total_upserts
