@@ -32,13 +32,13 @@ pdf_files = sorted(glob.glob(os.path.join(validations_dir, "validation_report_*.
                    key=os.path.getmtime, reverse=True)
 
 if not csv_files or not pdf_files:
-    print("ERROR: No se encontraron archivos de validación")
+    print("ERROR: No s'han trobat arxius de validació")
     sys.exit(1)
 
 csv_path = csv_files[0]
 pdf_path = pdf_files[0]
 
-print(f"\nArchivos a enviar:")
+print(f"\nArxius a enviar:")
 print(f"  CSV: {os.path.basename(csv_path)}")
 print(f"  PDF: {os.path.basename(pdf_path)}")
 
@@ -58,18 +58,18 @@ summary_stats = {
     "errors": errors
 }
 
-print(f"\nEstadísticas:")
+print(f"\nEstadístiques:")
 print(f"  Total: {total}")
 print(f"  OK: {ok}")
-print(f"  Discrepancias: {discrepancies}")
-print(f"  Errores: {errors}")
+print(f"  Discrepàncies: {discrepancies}")
+print(f"  Errors: {errors}")
 
 # Obtener período del config
 period_start = config["period"]["start"]
 period_end = config["period"]["end"]
 
-print(f"\nPeríodo: {period_start} → {period_end}")
-print(f"\nEnviando email a: {', '.join(config['email']['recipients'])}")
+print(f"\nPeríode: {period_start} → {period_end}")
+print(f"\nEnviant email a: {', '.join(config['email']['recipients'])}")
 
 # Enviar email
 try:
@@ -85,10 +85,10 @@ try:
         logger=logger
     )
     
-    print("\n✓ Email enviado exitosamente")
+    print("\n✓ Email enviat correctament")
     
 except Exception as e:
-    print(f"\n✗ Error enviando email: {e}")
+    print(f"\n✗ Error enviant email: {e}")
     import traceback
     traceback.print_exc()
     sys.exit(1)

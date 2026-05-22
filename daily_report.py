@@ -177,16 +177,16 @@ def extract_stats_from_output(output: str) -> dict:
     }
     
     try:
-        # Buscar líneas de resumen
+        # Buscar líneas de resumen (en catalán)
         if match := re.search(r"Total senales:\s*(\d+)", output):
             stats["total"] = int(match.group(1))
-        if match := re.search(r"OK \(perfectas\):\s*(\d+)", output):
+        if match := re.search(r"OK \(perfectes\):\s*(\d+)", output):
             stats["ok_perfect"] = int(match.group(1))
-        if match := re.search(r"OK \(con reset 16-bit\):\s*(\d+)", output):
+        if match := re.search(r"OK \(amb reset 16-bit\):\s*(\d+)", output):
             stats["ok_reset"] = int(match.group(1))
-        if match := re.search(r"Discrepancias:\s*(\d+)", output):
+        if match := re.search(r"Discrepàncies:\s*(\d+)", output):
             stats["discrepancies"] = int(match.group(1))
-        if match := re.search(r"Errores:\s*(\d+)", output):
+        if match := re.search(r"Errors:\s*(\d+)", output):
             stats["errors"] = int(match.group(1))
     except Exception as e:
         logger.warning(f"Error extrayendo estadísticas: {e}")

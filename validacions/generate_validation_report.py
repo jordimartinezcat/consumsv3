@@ -130,7 +130,7 @@ def create_pdf_report(csv_path, output_path):
             elements.append(logo)
             elements.append(Spacer(1, 0.5*cm))
         except Exception as e:
-            print(f"Advertencia: No se pudo cargar el logo: {e}")
+            print(f"Avís: No s'ha pogut carregar el logo: {e}")
     
     # Título
     title = Paragraph("INFORME DE VALIDACIÓ DE CONSUMS", title_style)

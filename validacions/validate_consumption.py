@@ -192,11 +192,11 @@ def validate_signal(api, signal, df_hourly, tag_uid_map, start_timestamp, end_ti
     # Determinar tipo de error si hay valores faltantes
     if tot_initial is None or tot_final is None:
         if tot_initial is None and tot_final is None:
-            error_msg = "Totalizador no existe o no tiene datos en el periodo"
+            error_msg = "Totalitzador no existeix o no té dades al període"
         elif tot_initial is None:
-            error_msg = "No se pudo obtener totalizador inicial"
+            error_msg = "No s'ha pogut obtenir totalitzador inicial"
         else:
-            error_msg = "No se pudo obtener totalizador final"
+            error_msg = "No s'ha pogut obtenir totalitzador final"
         
         logging.warning(f"{error_msg} para {signal}")
         return {
@@ -230,7 +230,7 @@ def validate_signal(api, signal, df_hourly, tag_uid_map, start_timestamp, end_ti
         return {
             "signal": signal,
             "status": "ERROR",
-            "message": "Columna de consumo no encontrada",
+            "message": "Columna de consum no trobada",
             "tot_initial": tot_initial,
             "tot_final": tot_final,
             "diff_totalizer": diff_totalizer,
@@ -258,11 +258,11 @@ def validate_signal(api, signal, df_hourly, tag_uid_map, start_timestamp, end_ti
         message = ""
     elif is_reset_mismatch:
         status = "OK"
-        message = "Reset de contador 16-bit no detectado (65536 L)"
+        message = "Reset de comptador 16-bit no detectat (65536 L)"
         # logging.debug(f"Reset de contador detectado: diferencia = {difference:.0f} L ≈ 65536 L")
     else:
         status = "DISCREPANCIA"
-        message = f"Error relativo: {relative_error_pct:.2f}%"
+        message = f"Error relatiu: {relative_error_pct:.2f}%"
     
     return {
         "signal": signal,
@@ -352,40 +352,40 @@ def main():
     discrepancy_count = (df_results["status"] == "DISCREPANCIA").sum()
     
     print(f"Total senales: {len(signals)}")
-    print(f"  OK (perfectas): {ok_perfect}")
-    print(f"  OK (con reset 16-bit): {ok_with_reset}")
-    print(f"  Discrepancias: {discrepancy_count}")
-    print(f"  Errores: {error_count}")
+    print(f"  OK (perfectes): {ok_perfect}")
+    print(f"  OK (amb reset 16-bit): {ok_with_reset}")
+    print(f"  Discrepàncies: {discrepancy_count}")
+    print(f"  Errors: {error_count}")
     
     # Guardar reporte
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_file = os.path.join(ROOT, "validacions", f"validation_report_{timestamp}.csv")
     df_results.to_csv(output_file, sep=";", decimal=",", index=False)
-    print(f"\nReporte guardado en: {output_file}")
+    print(f"\nInforme desat a: {output_file}")
     
     # Mostrar discrepancias si las hay
     if discrepancy_count > 0:
         print("\n" + "="*80)
-        print("DISCREPANCIAS DETECTADAS:")
+        print("DISCREPÀNCIES DETECTADES:")
         print("="*80)
         discrepancies = df_results[df_results["status"] == "DISCREPANCIA"]
         for _, row in discrepancies.iterrows():
             print(f"\n{row['signal']}:")
-            print(f"  Diferencia totalizador: {row['diff_totalizer']:.2f}")
-            print(f"  Suma consumos:          {row['sum_consumption']:.2f}")
-            print(f"  Diferencia absoluta:    {row['difference']:.2f}")
-            print(f"  Error relativo:         {row['relative_error_pct']:.4f}%")
+            print(f"  Diferència totalitzador: {row['diff_totalizer']:.2f}")
+            print(f"  Suma consums:            {row['sum_consumption']:.2f}")
+            print(f"  Diferència absoluta:     {row['difference']:.2f}")
+            print(f"  Error relatiu:           {row['relative_error_pct']:.4f}%")
     
     # Mostrar resumen de resets detectados
     if ok_with_reset > 0:
         print("\n" + "="*80)
-        print(f"SENALES CON RESETS DE CONTADOR 16-BIT DETECTADOS: {ok_with_reset}")
+        print(f"SENYALS AMB RESETS DE COMPTADOR 16-BIT DETECTATS: {ok_with_reset}")
         print("="*80)
-        print("Estas senales tienen diferencias de 65536 L (reset de contador LOW)")
-        print("Los consumos calculados son correctos, validacion OK")
+        print("Aquests senyals tenen diferències de 65536 L (reset de comptador LOW)")
+        print("Els consums calculats són correctes, validació OK")
         resets = df_results[(df_results["status"] == "OK") & (df_results["message"].str.contains("reset", case=False, na=False))]
         for _, row in resets.iterrows():
-            print(f"  {row['signal']}: diferencia = {row['difference']:.0f} L")
+            print(f"  {row['signal']}: diferència = {row['difference']:.0f} L")
     
     # Mostrar errores si los hay
     if error_count > 0:
