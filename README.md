@@ -104,21 +104,21 @@ Consulta documentació detallada: [docs/AUTOMATIZACION.md](docs/AUTOMATIZACION.m
 
 ### 1. Base de Dades i API
 
-Ja configurat a `consums_config.json`:
+Configurar a `consums_config.json`:
 
 ```json
 {
   "db": {
-    "host": "40.85.79.213",
+    "host": "your-postgresql-host.database.azure.com",
     "port": 5432,
-    "database": "goaigua_data",
-    "user": "ga_nifisagecad",
-    "password": "UbU8APdhoFxv6"
+    "database": "your_database_name",
+    "user": "your_database_user",
+    "password": "your_secure_password"
   },
   "api": {
-    "base_url": "https://sagedcat-nex0-vm.xylemvue.goaigua.com:56443/api",
-    "nexustoken": "0333adb8-07fa-40d6-8f10-f5e66b6163a9",
-    "vista": "560597aa-89e3-43df-9273-7875595319b8"
+    "base_url": "https://your-api-endpoint.com/api",
+    "nexustoken": "your-nexus-token-here",
+    "vista": "your-vista-id-here"
   }
 }
 ```
