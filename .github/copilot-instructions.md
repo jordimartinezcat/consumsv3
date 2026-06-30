@@ -108,4 +108,22 @@ python .\procesado\run_hourly_aggregation.py
 - Audit columns (`*_CSM_ADJUSTED`) track all processing interventions
 - Use `force_minute_requery_hours` config for reproducible debugging
 
+## Context Documentation
+
+This project has comprehensive context documentation in the `context/` folder:
+
+- **context/PROJECT.md**: Current project state, recent changes, and what's being worked on
+- **context/RULES.md**: The 7 critical business rules with exact code locations
+- **context/ARCHITECTURE.md**: Complete data flow diagram and module responsibilities
+- **context/DECISIONS.md**: Technical decisions with rationale and consequences
+
+**Before making any changes**:
+1. Read `context/RULES.md` to understand which business rules you might affect
+2. Review `context/ARCHITECTURE.md` to see the data flow
+3. Check `context/PROJECT.md` for current state
+4. After changes, update CHANGELOG.md (Keep a Changelog format)
+5. If you modify business rules, update `context/RULES.md`
+6. If you change architecture, update `context/ARCHITECTURE.md`
+7. If you make a significant technical decision, document it in `context/DECISIONS.md`
+
 When working on this codebase, prioritize understanding the signal extraction logic and consumption calculation patterns, as these form the core business logic for industrial telemetry processing.

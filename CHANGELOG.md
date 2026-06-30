@@ -6,6 +6,33 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **Documentación de contexto persistente** (`context/` folder):
+  - `context/PROJECT.md`: Estado actual del proyecto, últimos desarrollos, trabajo en curso
+  - `context/RULES.md`: Las 7 reglas de negocio críticas con código exacto y ubicación
+  - `context/ARCHITECTURE.md`: Arquitectura completa con diagrama de flujo, responsabilidades, transformaciones
+  - `context/DECISIONS.md`: 12 decisiones técnicas documentadas (Python 3.13, psycopg v3, OAuth2, etc.)
+  - Esta documentación facilita el mantenimiento y desarrollo futuro del sistema
+
+- **Validación mensual automática**:
+  - Nuevo script `validacions/validate_monthly_consumption.py` para validar períodos mensuales completos
+  - **Fuente de datos**: Vista PostgreSQL `ga_datalake.ite_v_consums_24h` (incluye rectificaciones)
+  - Se ejecuta automáticamente el día 1 de cada mes (integrado en `daily_report.py`)
+  - Compara totalizer(01/MM 00:00) vs totalizer(01/MM+1 00:00) contra suma de consumos del mes desde BD
+  - Genera **CSV y PDF mensuales** con resultados: `validation_monthly_YYYYMM_*.csv` y `validation_monthly_YYYYMM_*.pdf`
+  - **Informe PDF mensual** con estructura visual idéntica al diario:
+    - Logo y encabezado con título "INFORME DE VALIDACIÓ MENSUAL"
+    - Tabla resumen con estadísticas (% OK, resets, errores, discrepancias)
+    - Sección 1: Errors - Sense dades a l'API (color rojo)
+    - Sección 2: Senyals amb resets detectats (color naranja) con explicación
+    - Sección 3: Discrepàncies (color azul) para revisión caso por caso
+    - Formato A4 horizontal para mejor visualización
+  - Criterios de validación más tolerantes para períodos largos (0.5% error, 100L diferencia)
+  - Detección de múltiples resets acumulados durante el mes (múltiplos de 65.536L)
+  - Script manual `run_monthly_validation.py` para ejecución independiente
+  - Integración en email diario: adjunta **CSV y PDF mensuales** cuando se ejecuta el día 1
+  - Consulta SQL optimizada con JOIN a `cfg_tags` para obtener nombres de señales
+  - Documentación completa en README y docs/VALIDACION_MENSUAL.md con ejemplos de uso y estructura del PDF
+
 - per10 multiplier feature for consumption calculation:
   - `get_tag_per10()` function in `db_connection.py` queries per10 flag from cfg_tags table
   - `apply_per10_multiplier()` function in `run_compute_for_minutes.py` multiplies totalizer columns by 10

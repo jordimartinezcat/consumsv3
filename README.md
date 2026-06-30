@@ -42,21 +42,23 @@ Consums_v3/
 │   └── save_hourly_consumption.py  # DELETE + INSERT bulk a PostgreSQL
 │
 ├── validacions/                    # Validació i informes
-│   ├── validate_consumption.py     # Validació vs API
-│   ├── generate_validation_report.py  # Generació PDF (català)
+│   ├── validate_consumption.py     # Validació diària vs API
+│   ├── validate_monthly_consumption.py  # Validació mensual vs API
+│   ├── generate_validation_report.py    # Generació PDF (català)
 │   └── firma.html                  # Firma corporativa per email
 │
 ├── email_utils/                    # Enviament email
 │   ├── oauth2.py                   # Autenticació OAuth2 Microsoft
 │   └── sender.py                   # Enviament email HTML amb firma
 │
-├── daily_report.py                 # Script automatització diària
+├── daily_report.py                 # Script automatització diària + mensual
 ├── send_last_report.py             # Reenviar últim informe
+├── run_monthly_validation.py       # Validació mensual manual
 ├── run_pipeline.py                 # Pipeline complert manual
 └── consums_config.json             # Configuració central
 ```
 
-## 🚀 Automatització Diària
+## 🚀 Automatització Diària i Mensual
 
 ### Script Principal: `daily_report.py`
 
@@ -69,18 +71,27 @@ Executa automàticament cada dia:
    - Processament totalitzadors
    - Càlcul consums amb detecció anomalies
    - Inserció a base de dades
-4. **Validació automàtica**:
+4. **Validació diària automàtica**:
    - Comparació consums vs totalitzadors API
    - Generació CSV amb resultats
    - Generació PDF amb informe detallat
-5. **Enviament per email**:
+5. **Validació mensual automàtica** (només dia 1 del mes):
+   - Validació del mes anterior complert
+   - Comparació: Tot(01/MM) vs Tot(01/MM+1)
+   - Generació CSV mensual amb resultats
+6. **Enviament per email**:
    - Format HTML amb estils
    - Firma corporativa HTML
-   - Adjunts: PDF + CSV
+   - Adjunts: PDF + CSV diaris
+   - Adjunt addicional: CSV mensual (si és dia 1)
 
 ### Ús Manual
 
-```powershell
+# Si és dia 1, també executa validació mensual
+python daily_report.py
+
+# Executar validació mensual manualment
+python run_monthly_validation
 # Activar entorn virtual
 .\.venv\Scripts\Activate.ps1
 
@@ -161,11 +172,26 @@ python daily_report.py
 6. ✅ Execucions posteriors seran automàtiques (sense intervenció)
 
 **Guia completa**: [docs/EMAIL_SETUP.md](docs/EMAIL_SETUP.md)
+Validació Diària
 
-### 3. Dependències
+Executa **cada dia** per validar el consum del dia anterior:
+- **Període**: Dia anterior 00:00 → Dia actual 00:00
+- **Comparació**: Tot(dia+1 00:00) - Tot(dia 00:00) vs Σ(consums 24 hores)
+- **Generació**: PDF + CSV diaris
 
-```powershell
-pip install pandas sqlalchemy psycopg2 requests msal reportlab pillow
+### Validació Mensual
+
+Executa **automàticament el dia 1 de cada mes** per validar el mes anterior complert:
+- **Període**: Dia 01/MM/AAAA 00:00 → Dia 01/MM+1/AAAA 00:00
+- **Comparació**: Tot(01/mes+1) - Tot(01/mes) vs Σ(consums tot el mes)
+- **Generació**: CSV mensual amb estadístiques agregades
+- **Exemple**: El 1 de juny valida tot el mes de maig
+
+### Tipus de Resultats
+
+**✅ OK (perfectes)**: Consum calculat coincideix exactament amb diferència de totalitzadors API
+
+**✅ OK (amb resets)**: Resets de comptador detectats (65.536L o múltiples) i corregits automàticament
 ```
 
 ## 📊 Sistema de Validació
@@ -246,7 +272,13 @@ python daily_report.py
     "start": "2026-05-19 00:00:00",
     "end": "2026-05-20 00:00:00"
   }
-}
+}ecutar Validació Mensual Manualment
+
+```powershell
+python run_monthly_validation.py
+```
+
+### Ex
 ```
 
 2. Executar pipeline:
@@ -265,8 +297,9 @@ python validacions/validate_consumption.py
 python send_last_report.py
 ```
 
-### Extreure Noves Senyals
-
+### Extreure Noves Senyals    # Resultats validació diària
+│   ├── validation_report_*.pdf         # Informe visual diari (català)
+│   └── validation_monthly_YYYYMM_*.csv # Resultats validació mensual
 ```powershell
 python adquisicion/extraer_senales_ftr.py
 ```
@@ -460,6 +493,70 @@ Get-ChildItem validacions\validation_report_*.pdf | Sort-Object LastWriteTime -D
 1. **No compartir** `token_cache.json` ni `consums_config.json`
 2. **Rotar credencials** periòdicament
 3. **Monitoritzar logs** per detectar accessos no autoritzats
+
+## 📚 Documentació de Contexto Persistent
+
+El projecte inclou documentació detallada per facilitar el manteniment i desenvolupament futur:
+
+### Carpeta `context/`
+
+Documentació tècnica per desenvolupadors i manteniment:
+
+- **`context/PROJECT.md`** - Estat actual del projecte
+  - Què està en producció
+  - Últims desenvolupaments completats
+  - Treball en curs i millores futures
+  - Operacions comunes
+  - Mètriques de producció
+
+- **`context/RULES.md`** - Les 7 regles de negoci crítiques
+  - per10 multiplier (18 senyals)
+  - Detecció de resets de comptador
+  - Última hora del dia (23:00)
+  - Timestamps de validació (00:00)
+  - Encoding Windows Server (cp1252)
+  - Permisos PostgreSQL
+  - Idioma català
+  - Codi exacte i ubicació de cada regla
+
+- **`context/ARCHITECTURE.md`** - Arquitectura del sistema
+  - Diagrama de flux complet (ASCII art)
+  - Taula de responsabilitats per mòdul
+  - Flux de dades detallat (transformacions)
+  - Estructura de fitxers i directoris
+  - Integracions externes (API, BD, OAuth2)
+  - Flux temporal d'execució diària
+
+- **`context/DECISIONS.md`** - Decisions tècniques
+  - 12 decisions tècniques documentades
+  - Context, alternatives, raons, conseqüències
+  - Python 3.13, psycopg v3, OAuth2, etc.
+  - Plantilla per noves decisions
+
+### Carpeta `docs/`
+
+Documentació operativa i guies d'ús:
+
+- **`docs/AUTOMATIZACION.md`** - Configuració Windows Task Scheduler
+- **`docs/EMAIL_SETUP.md`** - Configuració OAuth2 Microsoft
+- **`docs/VALIDACION_MENSUAL.md`** - Guia validació mensual
+- **`docs/DIAGRAMA_VALIDACION_MENSUAL.md`** - Flux detallat validació mensual
+- **`docs/per10_multiplier.md`** - Documentació tècnica per10
+
+### Workflow de Desenvolupament
+
+**Abans de modificar codi**:
+1. Llegeix `context/RULES.md` → entendre regles de negoci afectades
+2. Revisa `context/ARCHITECTURE.md` → entendre flux de dades
+3. Consulta `context/PROJECT.md` → estat actual del sistema
+4. Revisa `CHANGELOG.md` → què va canviar recentment
+
+**Després de fer canvis**:
+1. Actualitza `CHANGELOG.md` (format Keep a Changelog)
+2. Si afecta regles: actualitza `context/RULES.md`
+3. Si afecta arquitectura: actualitza `context/ARCHITECTURE.md`
+4. Si és decisió tècnica important: documenta a `context/DECISIONS.md`
+5. Actualitza `context/PROJECT.md` amb nou estat
 4. **Backups** de configuració en ubicació segura
 5. **Permisos** dels fitxers només per usuari d'execució
 
