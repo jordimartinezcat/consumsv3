@@ -14,6 +14,7 @@ import sys
 import json
 import pandas as pd
 from datetime import datetime, timedelta
+import pytz
 import logging
 
 # Configurar rutas
@@ -22,6 +23,11 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "CAT_Conexions", "src"))
 
 from conexions import apiSagedCAT
+from persistencia.db_connection import get_db_connection
+from persistencia.save_totalizers import (
+    create_totalizers_table_if_not_exists,
+    save_totalizers_batch
+)
 
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -134,9 +140,18 @@ def get_totalizer_from_api(api, signal, timestamp, tag_uid_map, vista, base_url)
                 logging.warning(f"  Valores NaN para {signal} en {timestamp}")
                 return None
             
+            # Convertir a int
+            val_h_int = int(val_h)
+            val_l_int = int(val_l)
+            
+            # Si val_l es negativo, convertir a unsigned de 16-bit
+            # En sistemas de 16-bit signed, los valores negativos se convierten a unsigned sumando 65536
+            if val_l_int < 0:
+                val_l_int = 65536 + val_l_int
+            
             # Combinar en 32-bit: (HIGH * 65536) + LOW
-            total_32bit = int(val_h) * 65536 + int(val_l)
-            # logging.debug(f"  {signal}: H={int(val_h)}, L={int(val_l)} → TOT32={total_32bit}")
+            total_32bit = val_h_int * 65536 + val_l_int
+            # logging.debug(f"  {signal}: H={val_h_int}, L={val_l_int} → TOT32={total_32bit}")
             return total_32bit
             
         elif uid_direct:
@@ -328,12 +343,28 @@ def main():
     print(f"Periodo: {start_timestamp} -> {end_timestamp}")
     print(f"  (Consultando totalizador inicial en el primer minuto y final en el minuto 00:00 del día siguiente)")
     
+    # Convertir timestamps a UTC para consultas API
+    madrid_tz = pytz.timezone('Europe/Madrid')
+    
+    # Si los timestamps son naive, localizarlos a Madrid
+    if start_timestamp.tz is None:
+        start_local = madrid_tz.localize(start_timestamp.to_pydatetime())
+        end_local = madrid_tz.localize(end_timestamp.to_pydatetime())
+    else:
+        start_local = start_timestamp.astimezone(madrid_tz)
+        end_local = end_timestamp.astimezone(madrid_tz)
+    
+    # Convertir a UTC
+    start_utc = start_local.astimezone(pytz.UTC)
+    end_utc = end_local.astimezone(pytz.UTC)
+    
     # 7. Validar cada señal
     results = []
     base_url = api_cfg.get("base_url")
     for i, signal in enumerate(signals, 1):
         print(f"\r[{i}/{len(signals)}] Procesando {signal}...", end="", flush=True)
-        result = validate_signal(api, signal, df_hourly, tag_uid_map, start_timestamp, end_timestamp, vista, base_url)
+        # Usar timestamps UTC para consultas API
+        result = validate_signal(api, signal, df_hourly, tag_uid_map, start_utc, end_utc, vista, base_url)
         results.append(result)
     print()  # Nueva linea despues del progreso
     
@@ -362,6 +393,44 @@ def main():
     output_file = os.path.join(ROOT, "validacions", f"validation_report_{timestamp}.csv")
     df_results.to_csv(output_file, sep=";", decimal=",", index=False)
     print(f"\nInforme desat a: {output_file}")
+    
+    # Guardar totalizadores en PostgreSQL para uso posterior (SQL Server, etc.)
+    print("\nGuardando totalizadores en PostgreSQL...")
+    try:
+        pg_engine = get_db_connection(cfg)
+        create_totalizers_table_if_not_exists(pg_engine)
+        
+        # Preparar datos de totalizadores (solo señales con datos validos)
+        # Usar la fecha de inicio del período desde la configuración (en hora local)
+        period_start_str = cfg.get("period", {}).get("start", "")
+        if period_start_str:
+            # Parse la fecha configurada (naive, en hora local de Madrid)
+            period_start_naive = datetime.strptime(period_start_str, "%Y-%m-%d %H:%M:%S")
+            fecha_validacion = period_start_naive.date()
+        else:
+            # Fallback: usar el índice del archivo (puede ser incorrecto si está en UTC)
+            fecha_validacion = start_local.date()
+        
+        totalizers_data = []
+        
+        for _, row in df_results.iterrows():
+            if row['tot_initial'] is not None and row['tot_final'] is not None:
+                totalizers_data.append({
+                    'tag': row['signal'],
+                    'fecha': fecha_validacion,
+                    'totalizador_00h': row['tot_initial'],
+                    'totalizador_24h': row['tot_final']
+                })
+        
+        if totalizers_data:
+            save_totalizers_batch(pg_engine, totalizers_data)
+            print(f"[OK] Guardados {len(totalizers_data)} totalizadores en PostgreSQL")
+        else:
+            print("[WARN] No hay totalizadores validos para guardar")
+    
+    except Exception as e:
+        print(f"[ERROR] No se pudieron guardar totalizadores: {e}")
+        logging.error(f"Error guardando totalizadores: {e}", exc_info=True)
     
     # Mostrar discrepancias si las hay
     if discrepancy_count > 0:
