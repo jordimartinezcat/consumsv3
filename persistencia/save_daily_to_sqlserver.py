@@ -482,8 +482,8 @@ def save_daily_data_to_sqlserver(date=None, cfg=None):
         FROM ga_landing.ite_sql4_cfg_tags t
         WHERE t.tag LIKE '%_TOT'
           AND t.tag NOT LIKE 'ET%'
-          AND t.tag NOT LIKE '%_LS_%'
-          AND t.tag NOT LIKE '%_P_%'
+          AND t.tag NOT LIKE '%\\_LS\\_%' ESCAPE '\\'
+          AND t.tag NOT LIKE '%\\_P\\_%' ESCAPE '\\'
         ORDER BY t.tag
     """)
     
