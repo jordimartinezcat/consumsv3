@@ -70,16 +70,12 @@ def get_db_connection(cfg=None):
 
 
 def get_tag_id(engine, tag_name):
-    """Return idTag for a consumption tag, preferring ite_tags_consums if available."""
+    """Return idTag for a consumption tag from ite_consums_tags."""
 
     query = text(
         """
         SELECT "idTag"
-        FROM ga_landing.ite_tags_consums
-        WHERE tag = :tag_name
-        UNION ALL
-        SELECT "idTag"
-        FROM ga_landing.cfg_tags
+        FROM ga_landing.ite_consums_tags
         WHERE tag = :tag_name
         LIMIT 1
         """
@@ -92,7 +88,7 @@ def get_tag_id(engine, tag_name):
 
             if row is None:
                 raise ValueError(
-                    f"Tag '{tag_name}' not found in ite_tags_consums nor cfg_tags"
+                    f"Tag '{tag_name}' not found in ite_consums_tags"
                 )
 
             idtag = int(row[0])
@@ -106,19 +102,19 @@ def get_tag_id(engine, tag_name):
 
 
 def get_tag_per10(engine, tag_name):
-    """Return per10 flag for a tag from ite_tags_consums. Returns False if not found.
+    """Return per10 flag for a tag from ite_consums_tags. Returns False if not found.
 
-    NOTE: Must query ite_tags_consums (consumption tags), not cfg_tags.
+    NOTE: Must query ite_consums_tags (consumption tags), not cfg_tags.
     The tag must be converted from _TOT to _CSM format for the query.
     """
 
-    # Convert _TOT to _CSM since ite_tags_consums stores consumption tags
+    # Convert _TOT to _CSM since ite_consums_tags stores consumption tags
     csm_tag = tag_name.replace("_TOT", "_CSM")
 
     query = text(
         """
         SELECT per10
-        FROM ga_landing.ite_tags_consums
+        FROM ga_landing.ite_consums_tags
         WHERE tag = :tag_name
         LIMIT 1
         """
@@ -131,7 +127,7 @@ def get_tag_per10(engine, tag_name):
 
             if row is None:
                 logging.debug(
-                    f"Tag '{csm_tag}' not found in ite_tags_consums, assuming per10=False"
+                    f"Tag '{csm_tag}' not found in ite_consums_tags, assuming per10=False"
                 )
                 return False
 
