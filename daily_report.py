@@ -21,6 +21,10 @@ from pathlib import Path
 ROOT = Path(__file__).parent.absolute()
 sys.path.insert(0, str(ROOT))
 
+# Usar Python del entorno virtual si existe, sino el del sistema
+VENV_PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
+PYTHON_EXE = str(VENV_PYTHON) if VENV_PYTHON.exists() else sys.executable
+
 # Configurar logging
 log_dir = ROOT / "log"
 log_dir.mkdir(exist_ok=True)
@@ -78,7 +82,7 @@ def run_pipeline():
     
     try:
         result = subprocess.run(
-            [sys.executable, str(ROOT / "run_pipeline.py")],
+            [PYTHON_EXE, str(ROOT / "run_pipeline.py")],
             cwd=str(ROOT),
             capture_output=True,
             text=True,
@@ -120,7 +124,7 @@ def run_validation():
     
     try:
         result = subprocess.run(
-            [sys.executable, str(ROOT / "validacions" / "validate_consumption.py")],
+            [PYTHON_EXE, str(ROOT / "validacions" / "validate_consumption.py")],
             cwd=str(ROOT),
             capture_output=True,
             text=True,
@@ -194,8 +198,60 @@ def extract_stats_from_output(output: str) -> dict:
     return stats
 
 
-def send_email_report(csv_path: str, pdf_path: str, period_start: str, period_end: str, config: dict, summary_stats: dict):
-    """Envía el reporte por email."""
+def run_monthly_validation():
+    """
+    Ejecuta la validación mensual de consumos.
+    Se ejecuta automáticamente el día 1 de cada mes para validar el mes anterior completo.
+    Retorna las rutas de los archivos generados (CSV y PDF).
+    """
+    logger.info("="*80)
+    logger.info("INICIANDO VALIDACIÓN MENSUAL DE CONSUMOS")
+    logger.info("="*80)
+    
+    try:
+        result = subprocess.run(
+            [PYTHON_EXE, str(ROOT / "validacions" / "validate_monthly_consumption.py")],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            encoding="cp1252",  # Windows encoding for Spanish/Catalan
+            errors="replace",   # Replace invalid chars instead of crashing
+            timeout=1800  # 30 minutos timeout
+        )
+        
+        # Registrar output
+        if result.stdout:
+            logger.info("Monthly validation output:\n%s", result.stdout)
+        if result.stderr:
+            logger.warning("Monthly validation stderr:\n%s", result.stderr)
+        
+        # Buscar archivos generados más recientes (CSV y PDF)
+        validations_dir = ROOT / "validacions"
+        csv_files = sorted(validations_dir.glob("validation_monthly_*.csv"), key=lambda p: p.stat().st_mtime, reverse=True)
+        pdf_files = sorted(validations_dir.glob("validation_monthly_*.pdf"), key=lambda p: p.stat().st_mtime, reverse=True)
+        
+        if not csv_files:
+            logger.error("No se encontró archivo CSV de validación mensual generado")
+            return None, None
+        
+        csv_path = str(csv_files[0])
+        pdf_path = str(pdf_files[0]) if pdf_files else None
+        
+        logger.info(f"Validación mensual completada. CSV: {csv_path}, PDF: {pdf_path}")
+        return csv_path, pdf_path
+        
+    except subprocess.TimeoutExpired:
+        logger.error("Validación mensual excedió el tiempo máximo de ejecución (30 minutos)")
+        return None, None
+    except Exception as e:
+        logger.error(f"Error ejecutando validación mensual: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return None, None
+
+
+def send_email_report(csv_path: str, pdf_path: str, period_start: str, period_end: str, config: dict, summary_stats: dict, monthly_csv_path: str = None, monthly_pdf_path: str = None):
+    """Envía el reporte por email (diario y mensual si corresponde)."""
     logger.info("="*80)
     logger.info("ENVIANDO REPORTE POR EMAIL")
     logger.info("="*80)
@@ -209,6 +265,18 @@ def send_email_report(csv_path: str, pdf_path: str, period_start: str, period_en
     try:
         from email_utils import send_validation_report
         
+        # Preparar lista de adjuntos
+        attachments = [pdf_path, csv_path]
+        
+        # Si hay validación mensual, añadir sus archivos
+        if monthly_csv_path:
+            attachments.append(monthly_csv_path)
+            logger.info("Incluyendo CSV mensual en el email")
+        
+        if monthly_pdf_path:
+            attachments.append(monthly_pdf_path)
+            logger.info("Incluyendo PDF mensual en el email")
+        
         send_validation_report(
             pdf_path=pdf_path,
             csv_path=csv_path,
@@ -216,7 +284,9 @@ def send_email_report(csv_path: str, pdf_path: str, period_start: str, period_en
             period_end=period_end,
             config_email=email_config,
             summary_stats=summary_stats,
-            logger=logger
+            logger=logger,
+            monthly_csv_path=monthly_csv_path,  # Pasar el CSV mensual si existe
+            monthly_pdf_path=monthly_pdf_path   # Pasar el PDF mensual si existe
         )
         
         logger.info("Email enviado exitosamente")
@@ -248,7 +318,7 @@ def main():
             success = False
             return 1
         
-        # 3. Ejecutar validación (genera CSV y PDF automáticamente)
+        # 3. Ejecutar validación diaria (genera CSV y PDF automáticamente)
         csv_path, pdf_path, summary_stats = run_validation()
         
         if not csv_path or not pdf_path:
@@ -256,8 +326,26 @@ def main():
             success = False
             return 1
         
-        # 4. Enviar email con reporte
-        if not send_email_report(csv_path, pdf_path, period_start, period_end, config, summary_stats):
+        # 4. Validación mensual (solo día 1)
+        monthly_csv_path = None
+        monthly_pdf_path = None
+        today = datetime.now()
+        if today.day == 1:
+            logger.info("="*80)
+            logger.info("HOY ES DÍA 1 DEL MES - EJECUTANDO VALIDACIÓN MENSUAL")
+            logger.info("="*80)
+            monthly_csv_path, monthly_pdf_path = run_monthly_validation()
+            
+            if monthly_csv_path:
+                logger.info("Validación mensual completada exitosamente")
+                logger.info(f"  CSV: {monthly_csv_path}")
+                if monthly_pdf_path:
+                    logger.info(f"  PDF: {monthly_pdf_path}")
+            else:
+                logger.warning("Validación mensual falló, pero el proceso diario continúa")
+        
+        # 5. Enviar email con reporte (diario + mensual si corresponde)
+        if not send_email_report(csv_path, pdf_path, period_start, period_end, config, summary_stats, monthly_csv_path):
             logger.warning("Email no pudo ser enviado, pero el proceso continúa")
             # No marcamos como fallo porque el proceso principal fue exitoso
         

@@ -6,6 +6,85 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **Sistema de guardado de totalizadores en PostgreSQL**: Nueva tabla `ga_landing.ite_consums_totalitzadors` para almacenar totalizadores inicial/final obtenidos durante la validación diaria
+  - Módulo `persistencia/save_totalizers.py` con funciones para crear tabla y guardar/leer totalizadores
+  - Integración automática en `validacions/validate_consumption.py` para guardar totalizadores después de cada validación
+  - Ventajas: Histórico de totalizadores, consistencia de datos, mejor rendimiento
+- **Integración SQL Server para resumen diario**: Nueva funcionalidad para guardar datos diarios consolidados en SQL Server (tabla `Consums_dia`) después de la validación. Incluye:
+  - Módulo `persistencia/save_daily_to_sqlserver.py` con funciones para conexión, extracción de ID contador, consulta de consumos desde PostgreSQL
+  - **OPTIMIZACIÓN**: Lee totalizadores desde PostgreSQL (`ite_consums_totalitzadors`) en lugar de consultar la API cada vez
+  - Script de ejecución `persistencia/run_save_to_sqlserver.py` para integración en pipeline
+  - Estrategia MERGE (UPDATE si existe, INSERT si no) para evitar duplicados
+  - Autenticación Windows (Trusted Connection) para SQL Server
+  - Extracción automática de ID contador desde tag completo (ej: `CL_CAT_B11_FTR_G01_TOT` → `B11`)
+  - Documentación completa en `docs/SQL_SERVER_SETUP.md` con ejemplos de configuración, troubleshooting y verificación
+  - Dependencia `pyodbc==5.3.0` añadida al entorno virtual
+  - Ejemplo de configuración en `consums_config.json.example`
+  - Nueva tarea `save_to_sqlserver` en pipeline, ejecutada después de validación
+- **ANALISIS_DELETE_RECTIFICACIONES.md**: Documento de análisis confirmando que la lógica DELETE en `save_hourly_consumption.py` filtra correctamente por `idtag` (no afecta otras señales)
+
+### Changed
+
+- Actualizado `run_pipeline.py` para incluir nueva tarea `save_to_sqlserver` en el mapa de tareas
+- Modificado `validacions/validate_consumption.py` para guardar totalizadores en PostgreSQL automáticamente después de cada validación
+- Optimizado `persistencia/save_daily_to_sqlserver.py` para leer totalizadores desde PostgreSQL en lugar de API (más rápido y consistente)
+- **OPTIMIZACIÓN MAYOR de performance en SQL Server** (2026-07-01): Reducido de 624 queries a 3 operaciones batch:
+  - **Antes**: 208 señales × 3 queries (1 totalizer + 1 consumption + 1 MERGE) = **624 operaciones**
+  - **Después**: 3 operaciones totales:
+    1. `get_all_totalizers_batch()` - Obtiene TODOS los totalizadores en 1 query usando `WHERE tag = ANY(:tags)`
+    2. `get_all_consumptions_batch()` - Obtiene TODOS los consumos en 1 query con JOIN
+    3. `executemany()` - Inserta todos los registros en 1 batch a SQL Server
+  - **Mejora**: **208x más rápido** (de ~30s a <1s)
+  - **Técnica**: Batch queries con `ANY(:array)` en PostgreSQL, preparación en memoria, insert batch con `executemany()`
+  - **Beneficio adicional**: Reduce carga en servidores PostgreSQL y SQL Server
+- **Corregido cálculo de fecha en `validate_consumption.py`**: Ahora lee la fecha desde `consums_config.json` en lugar de usar el timestamp del archivo horario (que está en UTC), evitando errores de desfase de días
+- **REDISEÑO COMPLETO del mapeo de IDs en SQL Server**: Evolución del sistema de mapeo a través de 4 versiones
+  - **V1**: Extracción simplista desde nombre del tag → 23/208 registros (11%)
+  - **V2**: Normalización + SQL Server Comptadors.IdMaximo → 122/208 registros (59%)
+  - **V3**: Normalización + PostgreSQL ite_comptadors.IdMaximo → 163/208 registros (78%)
+  - **V4 (FINAL)**: JOIN entre `ite_consums_tags.tagOld` e `ite_comptadors.Id` → **165/208 registros (79%)**
+  - Nueva función `get_comptadors_mapping()` usando JOIN directo en PostgreSQL:
+    ```sql
+    SELECT REPLACE(tags.tag, '_CSM', '_TOT') as tag_tot, comp."Id" as id_comptador
+    FROM ga_landing.ite_consums_tags tags
+    INNER JOIN ga_landing.ite_comptadors comp ON tags."tagOld" = comp."Id"
+    WHERE tags.tag LIKE '%_CSM' AND tags."tagOld" IS NOT NULL
+    ```
+  - Simplificación del procesamiento: lookup directo en mapeo sin normalización
+  - **Ventaja conceptual**: Usa el campo `tagOld` diseñado explícitamente para mapear sistema antiguo → nuevo
+  - 40 señales sin mapeo (19%): no tienen `tagOld` o su `tagOld` no existe en `ite_comptadors`
+- **Validación de valores NaN**: Agregada validación para detectar y reemplazar NaN por 0.0 antes de insertar en SQL Server (evita error de tipo de datos)
+
+### Fixed
+
+- **BUG CRÍTICO: Totalizadores desaparecidos en SQL Server** (2026-07-01): Los totalizadores se guardaban en 0 debido a desajuste de prefijos CL_CAT_:
+  - **Problema**: Los tags en `ite_consums_tags` no tienen prefijo `CL_CAT_`, pero los totalizadores se guardan en `ite_consums_totalitzadors` con prefijo (vienen de validación que usa `ite_sql4_cfg_tags`)
+  - **Síntoma**: `get_all_totalizers_batch()` devolvía 0 registros aunque la tabla tenía 231 totalizadores guardados
+  - **Causa**: `signals_with_mapping` (sin prefijo) se comparaba con tags en tabla (con prefijo `CL_CAT_`)
+  - **Solución**: Agregar prefijo `CL_CAT_` a la lista de tags antes de buscar totalizadores batch:
+    ```python
+    signals_with_prefix = ['CL_CAT_' + tag for tag in signals_with_mapping]
+    totalizers_batch = get_all_totalizers_batch(pg_engine, signals_with_prefix, date)
+    # Luego quitar prefijo para facilitar lookup posterior
+    totalizers_batch_no_prefix = {tag.replace('CL_CAT_', ''): value for tag, value in totalizers_batch.items()}
+    ```
+  - **Resultado**: 165 totalizadores recuperados correctamente (antes 0, ahora 100% de señales con mapeo)
+  - **Commit**: [fecha] Fix totalizer prefix mismatch in batch query
+- **Bug crítico de fecha en totalizadores**: Los totalizadores se guardaban con fecha incorrecta (un día anterior) porque el archivo horario tiene timestamps en UTC. Solución: leer fecha desde `period.start` en configuración
+- **Error de mapeo de IDs en SQL Server**: Evolución de soluciones hasta lograr 79% de cobertura:
+  1. Extracción simplista fallaba (11% cobertura)
+  2. Mapeo vía SQL Server Comptadors.IdMaximo mejoró a 59%
+  3. Mapeo vía PostgreSQL ite_comptadors.IdMaximo mejoró a 78%
+  4. **SOLUCIÓN FINAL**: JOIN directo entre `ite_consums_tags.tagOld` e `ite_comptadors.Id` logra **79% cobertura (165/208 señales)**
+- **Error de valores NaN en SQL Server**: Algunos totalizadores contienen NaN que SQL Server rechaza. Solución: validar con `math.isnan()` y reemplazar por 0.0
+- **Error de columna NOT NULL**: SQL Server rechazaba NULL en columna `Especial`. Solución: usar valor 0 por defecto en columnas `Validat`, `Nivell` y `Especial`
+- **Error de encoding en subprocess (Windows)**: Modificado `daily_report.py` para usar Python del virtual environment (`.venv\Scripts\python.exe`) en lugar de `sys.executable`, evitando problemas de encoding y dependencias
+- **Error de sintaxis en daily_report.py línea 339**: Corregido código duplicado con paréntesis sin cerrar que causaba SyntaxError
+
+
+
+### Added
+
 - **Documentación de contexto persistente** (`context/` folder):
   - `context/PROJECT.md`: Estado actual del proyecto, últimos desarrollos, trabajo en curso
   - `context/RULES.md`: Las 7 reglas de negocio críticas con código exacto y ubicación
