@@ -508,30 +508,23 @@ def save_daily_data_to_sqlserver(date=None, cfg=None):
     logging.info(f"Señales con mapeo: {len(signals_with_mapping)}")
     logging.info(f"Obteniendo datos en BATCH...")
     
-    # CORRECCIÓN: Los totalizadores se guardaron con prefijo CL_CAT_, pero el mapeo no lo tiene
-    # Agregar el prefijo antes de buscar los totalizadores
-    signals_with_prefix = ['CL_CAT_' + tag for tag in signals_with_mapping]
-    
+    # CORRECCIÓN: Los totalizadores se guardaron SIN prefijo CL_CAT_
+    # Las señales en signals_with_mapping ya no tienen prefijo, así que las usamos directamente
     # OPTIMIZACIÓN: Obtener TODOS los totalizadores en una sola query
-    totalizers_batch = get_all_totalizers_batch(pg_engine, signals_with_prefix, date)
-    
-    # Crear diccionario sin prefijo para facilitar el acceso posterior
-    totalizers_batch_no_prefix = {
-        tag.replace('CL_CAT_', ''): value 
-        for tag, value in totalizers_batch.items()
-    }
+    totalizers_batch = get_all_totalizers_batch(pg_engine, signals_with_mapping, date)
     
     # OPTIMIZACIÓN: Obtener TODOS los consumos en una sola query
     tags_csm = [tag.replace('_TOT', '_CSM') for tag in signals_with_mapping]
     consumptions_batch = get_all_consumptions_batch(pg_engine, tags_csm, date)
     
-    logging.info(f"Totalizadores obtenidos: {len(totalizers_batch_no_prefix)}")
+    logging.info(f"Totalizadores obtenidos: {len(totalizers_batch)}")
     logging.info(f"Consumos obtenidos: {len(consumptions_batch)}")
     
     # Preparar datos para insert batch
     records_to_insert = []
     records_processed = 0
     records_skipped = 0
+    records_inserted = 0
     
     import math
     from datetime import datetime as dt
@@ -542,7 +535,7 @@ def save_daily_data_to_sqlserver(date=None, cfg=None):
         tag_csm = tag_name.replace('_TOT', '_CSM')
         
         # Obtener datos del batch
-        totalizer = totalizers_batch_no_prefix.get(tag_name)
+        totalizer = totalizers_batch.get(tag_name)
         consumption = consumptions_batch.get(tag_csm)
         
         # Verificar si tenemos datos
@@ -572,22 +565,51 @@ def save_daily_data_to_sqlserver(date=None, cfg=None):
     
     logging.info(f"Preparados {len(records_to_insert)} registros para insertar")
     
+    # DEDUPLICACIÓN: Eliminar registros duplicados por Id (mantener el último)
+    # Si múltiples señales mapean al mismo Id, solo insertamos una vez
+    seen_ids = {}
+    unique_records = []
+    duplicates_removed = 0
+    
+    for rec in records_to_insert:
+        rec_id = rec['id']
+        if rec_id not in seen_ids:
+            seen_ids[rec_id] = True
+            unique_records.append(rec)
+        else:
+            duplicates_removed += 1
+            logging.debug(f"Duplicado removido: Id={rec_id}")
+    
+    if duplicates_removed > 0:
+        logging.warning(f"Eliminados {duplicates_removed} registros duplicados por Id")
+    
+    records_to_insert = unique_records
+    logging.info(f"Registros únicos a insertar: {len(records_to_insert)}")
+    
     # OPTIMIZACIÓN: Insertar todos en batch usando executemany
     if records_to_insert:
         # PASO 1: DELETE preventivo para evitar conflictos de clave duplicada
-        # Eliminar registros existentes del día con formato explícito
+        # Eliminar registros existentes con los mismos (Id, Data)
+        # Crear lista de Ids únicos a borrar
+        ids_to_delete = [rec['id'] for rec in records_to_insert]
+        
+        # DELETE con IN clause (más eficiente que múltiples DELETEs)
+        placeholders = ','.join(['?' for _ in ids_to_delete])
         delete_sql = f"""
         DELETE FROM {table_name}
         WHERE CONVERT(DATE, Data) = CONVERT(DATE, ?)
+        AND Id IN ({placeholders})
         """
         
         try:
-            # Borrar registros del día - usar formato compatible con SQL Server
-            date_for_delete = date_obj.strftime('%Y-%m-%d 00:00:00')
-            cursor.execute(delete_sql, (date_for_delete,))
+            # Borrar registros del día para los Ids específicos
+            # Usar formato YYYYMMDD inequívoco
+            date_for_delete = date_obj.strftime('%Y%m%d')
+            params = [date_for_delete] + ids_to_delete
+            cursor.execute(delete_sql, params)
             deleted_count = cursor.rowcount
             sqlserver_conn.commit()
-            logging.info(f"Borrados {deleted_count} registros existentes del {date_obj.strftime('%Y-%m-%d')}")
+            logging.info(f"Borrados {deleted_count} registros existentes del {date_obj.strftime('%Y-%m-%d')} para {len(ids_to_delete)} comptadors")
         except Exception as e:
             logging.error(f"Error al borrar registros existentes: {e}")
             sqlserver_conn.rollback()
@@ -602,11 +624,12 @@ def save_daily_data_to_sqlserver(date=None, cfg=None):
         
         try:
             # Preparar los datos para executemany
+            # Usar formato YYYYMMDD sin guiones - inequívoco en SQL Server
             data_tuples = []
             for rec in records_to_insert:
                 data_tuples.append((
                     rec['id'],
-                    rec['date'].strftime('%Y-%m-%d %H:%M:%S'),
+                    rec['date'].strftime('%Y%m%d'),  # Formato YYYYMMDD sin ambigüedad
                     rec['consumption'],
                     rec['totalizer']
                 ))
