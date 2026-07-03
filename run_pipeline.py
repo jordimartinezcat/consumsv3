@@ -31,6 +31,12 @@ TASK_SCRIPT_MAP: Dict[str, Sequence[Tuple[str, str]]] = {
     "push_to_pg_datalake": (
         ("Persist hourly consumption", "persistencia/run_save_hourly.py"),
     ),
+    "save_to_sqlserver": (
+        ("Save daily summary to SQL Server", "persistencia/run_save_to_sqlserver.py"),
+    ),
+    "update_from_old": (
+        ("Update specific counters from Consums_dia_old", "persistencia/run_update_from_old.py"),
+    ),
 }
 
 
