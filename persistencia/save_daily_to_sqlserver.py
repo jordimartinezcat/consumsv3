@@ -575,21 +575,24 @@ def save_daily_data_to_sqlserver(date=None, cfg=None):
     # OPTIMIZACIÓN: Insertar todos en batch usando executemany
     if records_to_insert:
         # PASO 1: DELETE preventivo para evitar conflictos de clave duplicada
-        # Eliminar registros existentes del día antes de hacer MERGE
+        # Eliminar registros existentes del día con formato explícito
         delete_sql = f"""
         DELETE FROM {table_name}
-        WHERE CAST(Data AS DATE) = ?
+        WHERE CONVERT(DATE, Data) = CONVERT(DATE, ?)
         """
         
         try:
-            # Borrar registros del día
-            cursor.execute(delete_sql, (date_obj.strftime('%Y-%m-%d'),))
+            # Borrar registros del día - usar formato compatible con SQL Server
+            date_for_delete = date_obj.strftime('%Y-%m-%d 00:00:00')
+            cursor.execute(delete_sql, (date_for_delete,))
             deleted_count = cursor.rowcount
             sqlserver_conn.commit()
             logging.info(f"Borrados {deleted_count} registros existentes del {date_obj.strftime('%Y-%m-%d')}")
         except Exception as e:
-            logging.warning(f"No se pudieron borrar registros existentes: {e}")
+            logging.error(f"Error al borrar registros existentes: {e}")
             sqlserver_conn.rollback()
+            # Si falla el DELETE, no continuar con INSERT
+            raise
         
         # PASO 2: INSERT directo (ya no necesitamos MERGE porque borramos antes)
         insert_sql = f"""
