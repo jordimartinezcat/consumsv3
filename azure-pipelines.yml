@@ -1,0 +1,74 @@
+﻿# Pipeline CI/CD para Consums_v3
+# - Stage Test: instala dependencias y ejecuta la suite de tests unitarios (sin BD/API reales)
+# - Stage Deploy: en el servidor de producción (agente self-hosted), actualiza el código con git pull
+
+trigger:
+  branches:
+    include:
+      - main
+
+pr: none
+
+variables:
+  # Ruta del repo en el servidor de producción (coincide con la config del Task Scheduler)
+  deployPath: 'D:\Projects\Python\Consums_v3'
+  prodPython: 'C:\Python313\python.exe'
+
+stages:
+  - stage: Test
+    displayName: 'Build & Test'
+    jobs:
+      - job: RunTests
+        displayName: 'Lint + Unit tests'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '3.13'
+            displayName: 'Usar Python 3.13'
+
+          - script: |
+              python -m pip install --upgrade pip
+              pip install -r requirements.txt
+              pip install -r requirements-dev.txt
+            displayName: 'Instalar dependencias'
+
+          - script: |
+              ruff check . || true
+            displayName: 'Lint (ruff, informativo, no bloquea el build)'
+
+          - script: |
+              python -m pytest tests/ -v --junitxml=junit/test-results.xml
+            displayName: 'Ejecutar tests unitarios (DataFrames simulados, sin BD/API real)'
+
+          - task: PublishTestResults@2
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFiles: 'junit/test-results.xml'
+              testRunTitle: 'Consums_v3 unit tests'
+
+  - stage: Deploy
+    displayName: 'Deploy a producción'
+    dependsOn: Test
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: DeployProd
+        displayName: 'Actualizar servidor de producción'
+        environment: 'Production'
+        pool:
+          name: 'serversql4'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - powershell: |
+                    Set-Location -Path "$(deployPath)"
+                    git fetch origin
+                    git pull --ff-only origin main
+                  displayName: 'git pull en servidor de producción'
+
+                - powershell: |
+                    Set-Location -Path "$(deployPath)"
+                    & "$(prodPython)" -m pip install -r requirements.txt --quiet
+                  displayName: 'Actualizar dependencias Python'
