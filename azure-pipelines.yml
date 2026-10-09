@@ -10,9 +10,9 @@ trigger:
 pr: none
 
 variables:
-  # Ruta del repo en el servidor de producción (coincide con la config del Task Scheduler)
-  deployPath: 'D:\Projects\Python\Consums_v3'
-  prodPython: 'C:\Python313\python.exe'
+  # Ruta del repo en el servidor de producción
+  deployPath: 'C:\nifi-2.0.0-M3\python\scripts\consumsv3'
+  prodPython: 'C:\nifi-2.0.0-M3\python\scripts\consumsv3\.venv\Scripts\python.exe'
 
 stages:
   - stage: Test
