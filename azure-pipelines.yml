@@ -30,10 +30,7 @@ stages:
 
           - script: |
               python -m pip install --upgrade pip
-              # Nota: requirements.txt fija pandas==2.1.4, sin wheel para Linux+Python 3.13
-              # (falla al compilar desde fuente). Los tests solo necesitan pandas/numpy,
-              # así que se instalan versiones recientes en vez del requirements.txt completo.
-              pip install pandas numpy
+              pip install -r requirements.txt
               pip install -r requirements-dev.txt
             displayName: 'Instalar dependencias'
 
