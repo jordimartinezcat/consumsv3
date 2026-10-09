@@ -138,6 +138,15 @@ def run_validation():
             logger.info("Validation output:\n%s", result.stdout)
         if result.stderr:
             logger.warning("Validation stderr:\n%s", result.stderr)
+            
+            # CRÍTICO: Detectar errores de import o ejecución
+            if "ImportError" in result.stderr or "ModuleNotFoundError" in result.stderr:
+                logger.error("FALLO CRÍTICO: Error de import en validate_consumption.py")
+                logger.error("El script no se ejecutó correctamente")
+                return None, None, None
+            if "Traceback" in result.stderr and result.returncode != 0:
+                logger.error("FALLO: El script validate_consumption.py falló con excepción")
+                return None, None, None
         
         # La validación retorna código 1 si hay discrepancias, pero eso es normal
         # Solo consideramos error si es otro código o excepción
@@ -147,12 +156,23 @@ def run_validation():
         csv_files = sorted(validations_dir.glob("validation_report_*.csv"), key=lambda p: p.stat().st_mtime, reverse=True)
         pdf_files = sorted(validations_dir.glob("validation_report_*.pdf"), key=lambda p: p.stat().st_mtime, reverse=True)
         
-        if not csv_files or not pdf_files:
-            logger.error("No se encontraron archivos de validación generados")
+        # CRÍTICO: Verificar que los archivos son RECIENTES (generados en los últimos 5 minutos)
+        from datetime import datetime
+        five_minutes_ago = datetime.now().timestamp() - 300
+        
+        recent_csvs = [f for f in csv_files if f.stat().st_mtime > five_minutes_ago]
+        recent_pdfs = [f for f in pdf_files if f.stat().st_mtime > five_minutes_ago]
+        
+        if not recent_csvs or not recent_pdfs:
+            logger.error("No se encontraron archivos de validación RECIENTES generados")
+            logger.error(f"CSVs encontrados: {len(csv_files)}, recientes: {len(recent_csvs)}")
+            logger.error(f"PDFs encontrados: {len(pdf_files)}, recientes: {len(recent_pdfs)}")
+            if csv_files:
+                logger.error(f"Archivo CSV más reciente: {csv_files[0].name} ({datetime.fromtimestamp(csv_files[0].stat().st_mtime)})")
             return None, None, None
         
-        csv_path = str(csv_files[0])
-        pdf_path = str(pdf_files[0])
+        csv_path = str(recent_csvs[0])
+        pdf_path = str(recent_pdfs[0])
         
         # Extraer estadísticas del output
         summary_stats = extract_stats_from_output(result.stdout)
@@ -265,17 +285,12 @@ def send_email_report(csv_path: str, pdf_path: str, period_start: str, period_en
     try:
         from email_utils import send_validation_report
         
-        # Preparar lista de adjuntos
-        attachments = [pdf_path, csv_path]
-        
-        # Si hay validación mensual, añadir sus archivos
+        # TODO: Si hay validación mensual, habría que modificar send_validation_report()
+        # para aceptar archivos adicionales como parámetro opcional
         if monthly_csv_path:
-            attachments.append(monthly_csv_path)
-            logger.info("Incluyendo CSV mensual en el email")
-        
+            logger.info(f"Validación mensual generada: {monthly_csv_path}")
         if monthly_pdf_path:
-            attachments.append(monthly_pdf_path)
-            logger.info("Incluyendo PDF mensual en el email")
+            logger.info(f"Informe mensual generado: {monthly_pdf_path}")
         
         send_validation_report(
             pdf_path=pdf_path,
@@ -284,9 +299,7 @@ def send_email_report(csv_path: str, pdf_path: str, period_start: str, period_en
             period_end=period_end,
             config_email=email_config,
             summary_stats=summary_stats,
-            logger=logger,
-            monthly_csv_path=monthly_csv_path,  # Pasar el CSV mensual si existe
-            monthly_pdf_path=monthly_pdf_path   # Pasar el PDF mensual si existe
+            logger=logger
         )
         
         logger.info("Email enviado exitosamente")
