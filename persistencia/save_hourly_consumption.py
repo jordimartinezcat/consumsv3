@@ -429,6 +429,10 @@ def save_hourly_to_db(csv_path=None, cfg=None):
                     continue
 
                 raw_value = float(value)
+                # Acumular descripciones en vez de insertar varias filas por el
+                # mismo (data, idtag, tipus), que violaría el índice único
+                # ux_ite_consums_datarect_data_idtag_tipus
+                correction_descriptions = []
 
                 # Si estamos usando la columna corrected, también obtener el raw para registrar corrección
                 raw_from_source = None
@@ -440,17 +444,8 @@ def save_hourly_to_db(csv_path=None, cfg=None):
                         if not math.isclose(
                             raw_value, raw_from_source, rel_tol=1e-9, abs_tol=1e-6
                         ):
-                            descrip = f"Reset correction: {raw_from_source:.3f} -> {raw_value:.3f}"
-                            correction_records.append(
-                                {
-                                    "data": local_ts,
-                                    "data_insercio": insertion_time,
-                                    "idtag": int(idtag),
-                                    "valor": raw_value
-                                    * per10_multiplier,  # Aplicar per10
-                                    "tipus": 1,
-                                    "descrip": descrip,
-                                }
+                            correction_descriptions.append(
+                                f"Reset correction: {raw_from_source:.3f} -> {raw_value:.3f}"
                             )
 
                 # Verificar si es parte de un par compensatorio (usar position para indexar)
@@ -460,35 +455,14 @@ def save_hourly_to_db(csv_path=None, cfg=None):
                         pair_info["type"] == "negative"
                     ):  # Es el timestamp negativo (el primero del par)
                         net_value = float(pair_info["net_value"])
-
-                        # Crear corrección para el timestamp negativo (usar valor neto con per10)
-                        descrip = f"Compensatory pair correction: {pair_info['original_neg']:.3f} + {pair_info['original_pos']:.3f} = {net_value:.3f}"
-                        correction_records.append(
-                            {
-                                "data": local_ts,
-                                "data_insercio": insertion_time,
-                                "idtag": int(idtag),
-                                "valor": float(max(0.0, net_value))
-                                * per10_multiplier,  # Aplicar per10
-                                "tipus": 1,
-                                "descrip": descrip,
-                            }
+                        correction_descriptions.append(
+                            f"Compensatory pair correction: {pair_info['original_neg']:.3f} + {pair_info['original_pos']:.3f} = {net_value:.3f}"
                         )
                         raw_value = float(max(0.0, net_value))
                         negative_consumption_count += 1
                     else:  # Es el timestamp positivo (el segundo del par)
-                        # Crear corrección para eliminarlo (ya se contabilizó en el primero)
-                        descrip = f"Compensatory pair correction: eliminated (counted in previous hour)"
-                        correction_records.append(
-                            {
-                                "data": local_ts,
-                                "data_insercio": insertion_time,
-                                "idtag": int(idtag),
-                                "valor": 0.0
-                                * per10_multiplier,  # Aplicar per10 (0.0 * 10 = 0.0)
-                                "tipus": 1,
-                                "descrip": descrip,
-                            }
+                        correction_descriptions.append(
+                            "Compensatory pair correction: eliminated (counted in previous hour)"
                         )
                         raw_value = 0.0
 
@@ -501,25 +475,27 @@ def save_hourly_to_db(csv_path=None, cfg=None):
                     logging.warning(
                         f"   → Corrigiendo a 0.0 y guardando como rectificación"
                     )
-
-                    # Crear rectificación automática (aplicar per10 si está habilitado)
-                    descrip = f"Negative consumption correction: {raw_value:.3f} → 0.0 (automatic)"
-                    correction_records.append(
-                        {
-                            "data": local_ts,
-                            "data_insercio": insertion_time,
-                            "idtag": int(idtag),
-                            "valor": 0.0
-                            * per10_multiplier,  # Aplicar per10 (0.0 * 10 = 0.0)
-                            "tipus": 1,
-                            "descrip": descrip,
-                        }
+                    correction_descriptions.append(
+                        f"Negative consumption correction: {raw_value:.3f} → 0.0 (automatic)"
                     )
                     # Guardar 0 en lugar del valor negativo
                     raw_value = 0.0
 
                 # Aplicar multiplicador per10 si está habilitado
                 final_value = raw_value * per10_multiplier
+
+                # Una única fila de corrección por (data, idtag) combinando todas las causas
+                if correction_descriptions:
+                    correction_records.append(
+                        {
+                            "data": local_ts,
+                            "data_insercio": insertion_time,
+                            "idtag": int(idtag),
+                            "valor": final_value,
+                            "tipus": 1,
+                            "descrip": " | ".join(correction_descriptions),
+                        }
+                    )
 
                 records_to_insert.append(
                     {
@@ -661,7 +637,16 @@ def save_hourly_to_db(csv_path=None, cfg=None):
         try:
             # Convertir a DataFrame
             df_corrections = pd.DataFrame(all_correction_records)
-            
+
+            # Safety net: el índice único ux_ite_consums_datarect_data_idtag_tipus
+            # no admite filas repetidas de (data, idtag, tipus) dentro del mismo INSERT
+            dup_mask = df_corrections.duplicated(subset=["data", "idtag", "tipus"], keep="last")
+            if dup_mask.any():
+                logging.warning(
+                    f"⚠️  Eliminadas {dup_mask.sum()} correcciones duplicadas (data, idtag, tipus) antes de insertar"
+                )
+                df_corrections = df_corrections[~dup_mask].reset_index(drop=True)
+
             # Extraer rango de fechas y señales para DELETE previo
             min_data_rect = df_corrections['data'].min()
             max_data_rect = df_corrections['data'].max()
@@ -686,6 +671,7 @@ def save_hourly_to_db(csv_path=None, cfg=None):
                 logging.info(f"   ✓ Eliminadas {deleted_count_rect:,} correcciones existentes")
             
             # INSERT masivo con pandas
+            total_corrections_to_insert = len(df_corrections)
             logging.info(f"📥 Insertando {total_corrections_to_insert:,} correcciones nuevas...")
             df_corrections.to_sql(
                 name='ite_consums_datarect',
