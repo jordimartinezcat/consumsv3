@@ -1,5 +1,13 @@
 # Consums v3 - Sistema de Monitorització de Consums d'Aigua Industrial CAT
 
+> ⚠️ **REPOSITORI OBSOLET**: Aquest repositori de GitHub ja no s'utilitza i es
+> mantindrà únicament com a còpia de seguretat. El desenvolupament actiu i el
+> pipeline CI/CD viuen ara a Azure DevOps:
+>
+> `https://dev.azure.com/CAT-ITE/Consums/_git/Consums`
+>
+> No facis push ni obris pull requests aquí; utilitza el repositori d'Azure DevOps.
+
 ## 📋 Descripció
 
 Sistema automatitzat per al processament diari de dades de consum d'aigua de la infraestructura del Consorci d'Aigües de Tarragona (CAT). Extreu dades de sensors, processa totalitzadors, calcula consums amb detecció d'anomalies, valida resultats i envia informes automàtics per correu electrònic.
